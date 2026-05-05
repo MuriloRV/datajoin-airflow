@@ -1,0 +1,39 @@
+.env
+.env.local
+.env.*.local
+
+# .env de produção (preenchido na VM ou pelo GitHub Actions a partir dos secrets).
+# Apenas o .env.prod.example é versionado.
+deployment/.env.prod
+deployment/.env
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+logs/
+*.log
+
+# dbt build artifacts (gerados por dbt run/compile/test)
+dbt/projects/*/target/
+dbt/projects/*/dbt_packages/
+dbt/projects/*/logs/
+
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Claude Code:
+# - .claude/settings.local.json é pessoal (permissões do dev)
+# - .claude/skills/ É versionado — skills são compartilhadas entre devs
+.claude/settings.local.json
+
+# Secrets — credenciais OAuth de tenants nunca commitadas
+contaazul_*_extra.json
+*_refresh_token.json

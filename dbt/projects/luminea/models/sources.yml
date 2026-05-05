@@ -1,0 +1,375 @@
+version: 2
+
+sources:
+  - name: conta_azul
+    description: "Dados brutos extraidos da API do Conta Azul (camada raw)."
+    schema: luminea_raw
+    tables:
+      - name: conta_azul__pessoas
+        description: "Pessoas (PF/PJ) — endpoint /v1/pessoas. Populado pela DAG luminea__conta_azul_etl."
+        columns:
+          - name: id
+            description: "UUID da pessoa no Conta Azul."
+            data_tests:
+              - not_null
+              - unique
+          - name: nome
+            description: "Nome ou razao social."
+            data_tests:
+              - not_null
+          - name: email
+          - name: documento
+            description: "CPF ou CNPJ sem formatacao."
+          - name: tipo_pessoa
+            description: "'Fisica' (PF) | 'Juridica' (PJ)."
+          - name: telefone
+          - name: ativo
+          - name: id_legado
+            description: "ID numerico legado da v2 da API (0 = nao houve)."
+          - name: uuid_legado
+            description: "UUID legado da v2 da API (zero-uuid normalizado pra NULL)."
+          - name: perfis
+            description: "Array jsonb de strings: ['Cliente'], ['Fornecedor'] ou ambos."
+          - name: data_criacao
+          - name: data_alteracao
+          - name: loaded_at
+            data_tests:
+              - not_null
+
+      - name: conta_azul__categorias_financeiras
+        description: "Categorias financeiras DRE — endpoint /v1/categorias. Arvore via categoria_pai."
+        columns:
+          - name: id
+            data_tests: [not_null, unique]
+          - name: nome
+            data_tests: [not_null]
+          - name: tipo
+            description: "'RECEITA' | 'DESPESA'."
+          - name: categoria_pai
+            description: "FK self-ref pra outra categoria (nullable = raiz)."
+          - name: entrada_dre
+          - name: considera_custo_dre
+          - name: versao
+          - name: loaded_at
+            data_tests: [not_null]
+
+      - name: conta_azul__centros_de_custo
+        description: "Centros de custo — endpoint /v1/centro-de-custo."
+        columns:
+          - name: id
+            data_tests: [not_null, unique]
+          - name: nome
+            data_tests: [not_null]
+          - name: descricao
+          - name: ativo
+          - name: loaded_at
+            data_tests: [not_null]
+
+      - name: conta_azul__contas_financeiras
+        description: "Contas financeiras (bancos/caixas/cartoes) — endpoint /v1/conta-financeira."
+        columns:
+          - name: id
+            data_tests: [not_null, unique]
+          - name: nome
+            data_tests: [not_null]
+          - name: tipo
+            description: "'CONTA_CORRENTE' | 'CAIXINHA' | 'CARTAO_CREDITO' | ..."
+          - name: banco
+          - name: codigo_banco
+          - name: agencia
+          - name: numero
+          - name: ativo
+          - name: conta_padrao
+          - name: possui_config_boleto_bancario
+          - name: loaded_at
+            data_tests: [not_null]
+
+      - name: conta_azul__produtos
+        description: "Produtos do catalogo — endpoint /v1/produtos (plural; envelope `items` em ingles)."
+        columns:
+          - name: id
+            data_tests: [not_null, unique]
+          - name: nome
+          - name: codigo
+          - name: descricao
+          - name: preco
+          - name: custo
+          - name: estoque
+          - name: estoque_minimo
+          - name: unidade
+          - name: status
+            description: "'ATIVO' | 'INATIVO'."
+          - name: data_criacao
+          - name: data_alteracao
+          - name: loaded_at
+            data_tests: [not_null]
+
+      - name: conta_azul__vendedores
+        description: "Vendedores cadastrados — endpoint /v1/venda/vendedores."
+        columns:
+          - name: id
+            data_tests: [not_null, unique]
+          - name: nome
+            data_tests: [not_null]
+          - name: loaded_at
+            data_tests: [not_null]
+
+      - name: conta_azul__contratos
+        description: "Contratos — endpoint /v1/contratos. Schema tentativo (Luminea retorna 0)."
+        columns:
+          - name: id
+            data_tests: [not_null, unique]
+          - name: numero
+          - name: cliente_id
+          - name: valor
+          - name: data_inicio
+          - name: data_fim
+          - name: status
+          - name: raw
+            description: "Objeto completo em jsonb (defesa contra schema drift)."
+          - name: loaded_at
+            data_tests: [not_null]
+
+      - name: conta_azul__pessoas_detalhe
+        description: "Detalhe completo de pessoa — endpoint /v1/pessoas/{id} (N+1). Tem nested em jsonb."
+        columns:
+          - name: id
+            data_tests: [not_null, unique]
+          - name: nome
+            data_tests: [not_null]
+          - name: enderecos
+            description: "JSONB array. Expandido em stg_conta_azul__pessoa_enderecos."
+          - name: outros_contatos
+          - name: inscricoes
+          - name: loaded_at
+            data_tests: [not_null]
+
+      - name: conta_azul__contas_a_receber
+        description: "Eventos financeiros a receber. Endpoint /financeiro/eventos-financeiros/contas-a-receber/buscar."
+        columns:
+          - name: id
+            data_tests: [not_null, unique]
+          - name: status
+          - name: total
+          - name: data_vencimento
+          - name: data_competencia
+          - name: cliente
+            description: "JSONB {id, nome}."
+          - name: categorias
+            description: "JSONB array."
+          - name: centros_de_custo
+          - name: loaded_at
+            data_tests: [not_null]
+
+      - name: conta_azul__contas_a_pagar
+        description: "Eventos financeiros a pagar. Endpoint /financeiro/eventos-financeiros/contas-a-pagar/buscar."
+        columns:
+          - name: id
+            data_tests: [not_null, unique]
+          - name: status
+          - name: total
+          - name: data_vencimento
+          - name: fornecedor
+            description: "JSONB {id, nome}."
+          - name: categorias
+          - name: loaded_at
+            data_tests: [not_null]
+
+      - name: conta_azul__notas_servico
+        description: "NFS-e — endpoint /notas-fiscais-servico. Janela max 15d por chamada."
+        columns:
+          - name: id
+            data_tests: [not_null, unique]
+          - name: numero
+          - name: status
+          - name: valor
+          - name: data_emissao
+          - name: data_competencia
+          - name: raw
+          - name: loaded_at
+            data_tests: [not_null]
+
+      - name: conta_azul__notas_fiscais
+        description: "NFe (produto) — endpoint /notas-fiscais. So retorna EMITIDA/CORRIGIDA_SUCESSO hoje."
+        columns:
+          - name: id
+            data_tests: [not_null, unique]
+          - name: numero
+          - name: status
+            description: "'EMITIDA' | 'CORRIGIDA_SUCESSO'."
+          - name: valor
+          - name: data_emissao
+          - name: chave_acesso
+          - name: serie
+          - name: venda_id
+            description: "FK pra conta_azul__vendas (id)."
+          - name: cliente_id
+          - name: documento_tomador
+          - name: raw
+          - name: loaded_at
+            data_tests: [not_null]
+
+      # ─── Catalogo (master data adicional) ───
+      - name: conta_azul__produto_categorias
+        description: "Categorias de produto — endpoint /v1/produtos/categorias."
+        columns:
+          - name: id
+            data_tests: [not_null, unique]
+          - name: nome
+            data_tests: [not_null]
+          - name: descricao
+          - name: ativo
+          - name: raw
+          - name: loaded_at
+            data_tests: [not_null]
+
+      - name: conta_azul__produto_ncm
+        description: "Codigos NCM (Nomenclatura Comum do Mercosul) — endpoint /v1/produtos/ncm. PK = codigo."
+        columns:
+          - name: codigo
+            data_tests: [not_null, unique]
+          - name: descricao
+          - name: raw
+          - name: loaded_at
+            data_tests: [not_null]
+
+      - name: conta_azul__produto_cest
+        description: "Codigos CEST (Substituicao Tributaria) — endpoint /v1/produtos/cest. PK = codigo."
+        columns:
+          - name: codigo
+            data_tests: [not_null, unique]
+          - name: descricao
+          - name: ncm_relacionado
+          - name: raw
+          - name: loaded_at
+            data_tests: [not_null]
+
+      - name: conta_azul__produto_unidades_medida
+        description: "Unidades de medida (UN, KG, ...) — endpoint /v1/produtos/unidades-medida."
+        columns:
+          - name: id
+            data_tests: [not_null, unique]
+          - name: sigla
+          - name: descricao
+          - name: fracionavel
+          - name: raw
+          - name: loaded_at
+            data_tests: [not_null]
+
+      - name: conta_azul__produto_ecommerce_marcas
+        description: "Marcas e-commerce — endpoint /v1/produtos/ecommerce-marcas. 0 rows sem integracao e-com ativa."
+        columns:
+          - name: id
+            data_tests: [not_null, unique]
+          - name: nome
+            data_tests: [not_null]
+          - name: raw
+          - name: loaded_at
+            data_tests: [not_null]
+
+      # ─── Financeiro novos ───
+      - name: conta_azul__categorias_dre
+        description: "Categorias do DRE — endpoint /v1/financeiro/categorias-dre. Top-level retorna raizes; filhos via subitens jsonb."
+        columns:
+          - name: id
+            data_tests: [not_null, unique]
+          - name: descricao
+            description: "Nome real da categoria (campo `nome` da API e' sempre null)."
+          - name: codigo
+          - name: posicao
+            description: "Ordem visual no DRE."
+          - name: indica_totalizador
+            description: "Flag se a linha e' totalizacao (soma de filhos)."
+          - name: subitens
+            description: "JSONB array dos filhos (estrutura aninhada)."
+          - name: categorias_financeiras
+            description: "JSONB array das categorias financeiras vinculadas."
+          - name: raw
+          - name: loaded_at
+            data_tests: [not_null]
+
+      - name: conta_azul__transferencias
+        description: "Transferencias entre contas financeiras — endpoint /v1/financeiro/transferencias. Window 5 anos."
+        columns:
+          - name: id
+            data_tests: [not_null, unique]
+          - name: data_transferencia
+          - name: valor
+          - name: descricao
+          - name: conta_origem_id
+          - name: conta_destino_id
+          - name: raw
+          - name: loaded_at
+            data_tests: [not_null]
+
+      - name: conta_azul__saldo_inicial
+        description: "Saldos iniciais por conta financeira — endpoint /v1/financeiro/eventos-financeiros/saldo-inicial. Window 1 ano."
+        columns:
+          - name: id
+            data_tests: [not_null, unique]
+          - name: conta_financeira_id
+          - name: data_referencia
+          - name: saldo
+          - name: saldo_inicial
+          - name: raw
+          - name: loaded_at
+            data_tests: [not_null]
+
+      # ─── Tenant meta ───
+      - name: conta_azul__conta_conectada
+        description: "Info da empresa conectada (1 row por tenant) — endpoint /v1/pessoas/conta-conectada. PK synthetic (pk=1) — documento opcional pq tenants dev podem ter vazio."
+        columns:
+          - name: pk
+            data_tests: [not_null, unique]
+          - name: documento
+            description: "CNPJ — pode vir vazio em contas dev."
+          - name: razao_social
+          - name: nome_fantasia
+          - name: email
+          - name: data_fundacao
+          - name: raw
+          - name: loaded_at
+            data_tests: [not_null]
+
+      - name: conta_azul__servicos
+        description: "Servicos do catalogo — endpoint /v1/servico."
+        columns:
+          - name: id
+            data_tests: [not_null, unique]
+          - name: id_servico
+            description: "ID legado numerico (api v2)."
+          - name: nome
+          - name: codigo
+          - name: descricao
+          - name: preco
+          - name: custo
+          - name: status
+          - name: tipo_servico
+            description: "'PRESTADO' | 'TOMADO'."
+          - name: loaded_at
+            data_tests: [not_null]
+
+      - name: conta_azul__vendas
+        description: "Vendas (orcamentos/pedidos/vendas/NFs) — endpoint /v1/venda/busca. Schema tentativo, raw jsonb completo preservado."
+        columns:
+          - name: id
+            data_tests: [not_null, unique]
+          - name: numero
+          - name: situacao
+            description: "'APROVADO' | 'CANCELADO' | 'ESPERANDO_APROVACAO'."
+          - name: tipo
+            description: "'ORCAMENTO' | 'PEDIDO' | 'VENDA' | 'NOTA_FISCAL'."
+          - name: origem
+          - name: total
+          - name: data_venda
+          - name: data_alteracao
+          - name: cliente
+            description: "JSONB {id, nome}."
+          - name: vendedor
+            description: "JSONB {id, nome}."
+          - name: itens
+            description: "JSONB array — linhas de produto/servico vendido."
+          - name: raw
+            description: "Objeto completo em jsonb (defesa contra schema drift)."
+          - name: loaded_at
+            data_tests: [not_null]

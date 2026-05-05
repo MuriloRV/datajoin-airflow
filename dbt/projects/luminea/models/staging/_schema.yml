@@ -1,0 +1,272 @@
+version: 2
+
+models:
+  - name: stg_conta_azul__pessoas
+    description: "Pessoas do Conta Azul tipadas e renomeadas — sem regras de negocio."
+    columns:
+      - name: pessoa_id
+        data_tests: [not_null, unique]
+      - name: pessoa_nome
+        data_tests: [not_null]
+      - name: tipo_pessoa
+        description: "pf | pj | null."
+        data_tests:
+          - accepted_values:
+              values: ["pf", "pj"]
+              config:
+                where: "tipo_pessoa is not null"
+      - name: staged_at
+        data_tests: [not_null]
+
+  - name: stg_conta_azul__categorias_financeiras
+    description: "Categorias financeiras DRE — arvore via categoria_pai_id."
+    columns:
+      - name: categoria_id
+        data_tests: [not_null, unique]
+      - name: categoria_nome
+        data_tests: [not_null]
+      - name: tipo
+        description: "RECEITA | DESPESA."
+        data_tests:
+          - accepted_values:
+              values: ["RECEITA", "DESPESA"]
+              config:
+                where: "tipo is not null"
+      - name: staged_at
+        data_tests: [not_null]
+
+  - name: stg_conta_azul__centros_de_custo
+    description: "Centros de custo."
+    columns:
+      - name: centro_de_custo_id
+        data_tests: [not_null, unique]
+      - name: centro_de_custo_nome
+        data_tests: [not_null]
+      - name: staged_at
+        data_tests: [not_null]
+
+  - name: stg_conta_azul__contas_financeiras
+    description: "Contas financeiras (bancos/caixas/cartoes)."
+    columns:
+      - name: conta_financeira_id
+        data_tests: [not_null, unique]
+      - name: conta_nome
+        data_tests: [not_null]
+      - name: staged_at
+        data_tests: [not_null]
+
+  - name: stg_conta_azul__produtos
+    description: "Produtos do catalogo."
+    columns:
+      - name: produto_id
+        data_tests: [not_null, unique]
+      - name: status
+        data_tests:
+          - accepted_values:
+              values: ["ativo", "inativo"]
+              config:
+                where: "status is not null"
+      - name: staged_at
+        data_tests: [not_null]
+
+  - name: stg_conta_azul__vendedores
+    columns:
+      - name: vendedor_id
+        data_tests: [not_null, unique]
+      - name: vendedor_nome
+        data_tests: [not_null]
+      - name: staged_at
+        data_tests: [not_null]
+
+  - name: stg_conta_azul__contratos
+    description: "Schema tentativo — Luminea retorna 0. Coluna `raw` jsonb pra investigacao."
+    columns:
+      - name: contrato_id
+        data_tests: [not_null, unique]
+      - name: staged_at
+        data_tests: [not_null]
+
+  - name: stg_conta_azul__pessoas_detalhe
+    description: "Detalhe de pessoa (escalares). Nested expandido em modelos `pessoa_*`."
+    columns:
+      - name: pessoa_id
+        data_tests: [not_null, unique]
+      - name: pessoa_nome
+        data_tests: [not_null]
+      - name: tipo_pessoa
+        data_tests:
+          - accepted_values:
+              values: ["pf", "pj"]
+              config:
+                where: "tipo_pessoa is not null"
+      - name: staged_at
+        data_tests: [not_null]
+
+  - name: stg_conta_azul__pessoa_enderecos
+    description: "Enderecos da pessoa (1:N). Resultado de jsonb_array_elements em pessoas_detalhe.enderecos."
+    columns:
+      - name: pessoa_id
+        data_tests: [not_null]
+      - name: endereco_seq
+        data_tests: [not_null]
+      - name: staged_at
+        data_tests: [not_null]
+
+  - name: stg_conta_azul__contas_a_receber
+    description: "Eventos a receber. cliente extraido do JSONB."
+    columns:
+      - name: evento_id
+        data_tests: [not_null, unique]
+      - name: staged_at
+        data_tests: [not_null]
+
+  - name: stg_conta_azul__contas_a_pagar
+    description: "Eventos a pagar. fornecedor extraido do JSONB."
+    columns:
+      - name: evento_id
+        data_tests: [not_null, unique]
+      - name: staged_at
+        data_tests: [not_null]
+
+  - name: stg_conta_azul__notas_servico
+    description: "NFS-e. Schema tentativo — ajustar quando aparecer dado real."
+    columns:
+      - name: nota_id
+        data_tests: [not_null, unique]
+      - name: staged_at
+        data_tests: [not_null]
+
+  - name: stg_conta_azul__notas_fiscais
+    description: "NFe (produto). Schema tentativo. Hoje so vem EMITIDA/CORRIGIDA_SUCESSO."
+    columns:
+      - name: nota_id
+        data_tests: [not_null, unique]
+      - name: status
+        data_tests:
+          - accepted_values:
+              values: ["EMITIDA", "CORRIGIDA_SUCESSO"]
+              config:
+                where: "status is not null"
+      - name: staged_at
+        data_tests: [not_null]
+
+  # ─── Catalogo (master data adicional) ───
+  - name: stg_conta_azul__produto_categorias
+    description: "Categorias de produto. nome pode vir null (master data legacy)."
+    columns:
+      - name: categoria_id
+        data_tests: [not_null, unique]
+      - name: categoria_nome
+        description: "API as vezes retorna null — sinalizamos como warn pra nao quebrar pipeline."
+        data_tests:
+          - not_null:
+              config:
+                severity: warn
+      - name: staged_at
+        data_tests: [not_null]
+
+  - name: stg_conta_azul__produto_ncm
+    description: "NCMs (codigo fiscal de produto). PK = ncm_codigo."
+    columns:
+      - name: ncm_codigo
+        data_tests: [not_null, unique]
+      - name: staged_at
+        data_tests: [not_null]
+
+  - name: stg_conta_azul__produto_cest
+    description: "CESTs (Substituicao Tributaria). PK = cest_codigo."
+    columns:
+      - name: cest_codigo
+        data_tests: [not_null, unique]
+      - name: staged_at
+        data_tests: [not_null]
+
+  - name: stg_conta_azul__produto_unidades_medida
+    description: "Unidades de medida (UN, KG, ...)."
+    columns:
+      - name: unidade_id
+        data_tests: [not_null, unique]
+      - name: staged_at
+        data_tests: [not_null]
+
+  - name: stg_conta_azul__produto_ecommerce_marcas
+    description: "Marcas e-commerce. 0 rows sem integracao."
+    columns:
+      - name: marca_ecom_id
+        data_tests: [not_null, unique]
+      - name: staged_at
+        data_tests: [not_null]
+
+  # ─── Financeiro novos ───
+  - name: stg_conta_azul__categorias_dre
+    description: "Categorias do DRE — estrutura hierarquica via subitens jsonb."
+    columns:
+      - name: categoria_dre_id
+        data_tests: [not_null, unique]
+      - name: categoria_nome
+        description: "Vem de raw.descricao (campo `nome` da API e' sempre null)."
+        data_tests:
+          - not_null:
+              config:
+                severity: warn
+      - name: indica_totalizador
+        data_tests: [not_null]
+      - name: staged_at
+        data_tests: [not_null]
+
+  - name: stg_conta_azul__transferencias
+    description: "Transferencias entre contas financeiras."
+    columns:
+      - name: transferencia_id
+        data_tests: [not_null, unique]
+      - name: staged_at
+        data_tests: [not_null]
+
+  - name: stg_conta_azul__saldo_inicial
+    description: "Saldos iniciais por conta x periodo. Schema tentativo."
+    columns:
+      - name: saldo_id
+        data_tests: [not_null, unique]
+      - name: staged_at
+        data_tests: [not_null]
+
+  # ─── Tenant meta ───
+  - name: stg_conta_azul__conta_conectada
+    description: "Info da empresa conectada (1 row por tenant, pk=1)."
+    columns:
+      - name: pk
+        data_tests: [not_null, unique]
+      - name: staged_at
+        data_tests: [not_null]
+
+  - name: stg_conta_azul__servicos
+    description: "Servicos do catalogo."
+    columns:
+      - name: servico_id
+        data_tests: [not_null, unique]
+      - name: status
+        data_tests:
+          - accepted_values:
+              values: ["ativo", "inativo"]
+              config:
+                where: "status is not null"
+      - name: tipo_servico
+        data_tests:
+          - accepted_values:
+              values: ["prestado", "tomado"]
+              config:
+                where: "tipo_servico is not null"
+      - name: staged_at
+        data_tests: [not_null]
+
+  - name: stg_conta_azul__vendas
+    description: "Vendas do Conta Azul. cliente/vendedor extraidos do JSONB; itens preservados como jsonb."
+    columns:
+      - name: venda_id
+        data_tests: [not_null, unique]
+      - name: situacao
+        description: "Texto cru — 'APROVADO' | 'CANCELADO' | 'ESPERANDO_APROVACAO'."
+      - name: tipo
+        description: "'ORCAMENTO' | 'PEDIDO' | 'VENDA' | 'NOTA_FISCAL'."
+      - name: staged_at
+        data_tests: [not_null]

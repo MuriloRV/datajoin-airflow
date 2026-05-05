@@ -1,0 +1,114 @@
+name: Deploy Airflow (Hostinger VM)
+
+# Pipeline de deploy: push em main -> SSH na VM -> build + helm upgrade.
+#
+# IMPORTANTE: este pipeline NAO usa docker-compose. O `docker-compose.yml`
+# da raiz e' EXCLUSIVAMENTE para iteracao local de devs. O deploy roda
+# Helm/k3s a partir de `deployment/`.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-airflow
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.HOSTINGER_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -p "${HOSTINGER_PORT:-22}" -H "${{ secrets.HOSTINGER_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Render .env.prod from secrets
+        run: |
+          cat > /tmp/.env.prod <<EOF
+          POSTGRES_HOST_IP=${{ secrets.POSTGRES_HOST_IP }}
+          POSTGRES_PORT=${{ secrets.POSTGRES_PORT }}
+          POSTGRES_USER=${{ secrets.POSTGRES_USER }}
+          POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
+          POSTGRES_DB=${{ secrets.POSTGRES_DB }}
+          AIRFLOW_FERNET_KEY=${{ secrets.AIRFLOW_FERNET_KEY }}
+          AIRFLOW_SECRET_KEY=${{ secrets.AIRFLOW_SECRET_KEY }}
+          AIRFLOW_JWT_SECRET=${{ secrets.AIRFLOW_JWT_SECRET }}
+          SERVICE_TOKEN=${{ secrets.SERVICE_TOKEN }}
+          PLATFORM_API_URL=${{ secrets.PLATFORM_API_URL }}
+          DW_DB_USER=${{ secrets.DW_DB_USER }}
+          DW_DB_PASSWORD=${{ secrets.DW_DB_PASSWORD }}
+          DW_DB_NAME=${{ secrets.DW_DB_NAME }}
+          AIRFLOW_LOGS_DIR=${{ secrets.AIRFLOW_LOGS_DIR }}
+          EOF
+
+      - name: Sync project to VM
+        env:
+          HOST: ${{ secrets.HOSTINGER_HOST }}
+          USER: ${{ secrets.HOSTINGER_USER }}
+          PORT: ${{ secrets.HOSTINGER_PORT }}
+        run: |
+          PORT="${PORT:-22}"
+          REMOTE_DIR="/home/${USER}/datajoin-airflow"
+
+          ssh -p "$PORT" "$USER@$HOST" "mkdir -p $REMOTE_DIR"
+
+          # rsync do projeto inteiro EXCETO docker-compose (e' dev-only),
+          # .git, .github, .venv, dbt builds e o .env local.
+          rsync -az --delete \
+            -e "ssh -p $PORT" \
+            --exclude '.git/' \
+            --exclude '.github/' \
+            --exclude '.venv/' \
+            --exclude 'venv/' \
+            --exclude '__pycache__/' \
+            --exclude '*.pyc' \
+            --exclude 'docker-compose.yml' \
+            --exclude '.env' \
+            --exclude 'deployment/.env.prod' \
+            --exclude 'dbt/projects/*/target/' \
+            --exclude 'dbt/projects/*/dbt_packages/' \
+            --exclude 'dbt/projects/*/logs/' \
+            ./ "$USER@$HOST:$REMOTE_DIR/"
+
+          # Envia o .env.prod renderizado
+          scp -P "$PORT" /tmp/.env.prod "$USER@$HOST:$REMOTE_DIR/deployment/.env.prod"
+
+      - name: Run deploy on VM
+        env:
+          HOST: ${{ secrets.HOSTINGER_HOST }}
+          USER: ${{ secrets.HOSTINGER_USER }}
+          PORT: ${{ secrets.HOSTINGER_PORT }}
+          SHA: ${{ github.sha }}
+        run: |
+          PORT="${PORT:-22}"
+          REMOTE_DIR="/home/${USER}/datajoin-airflow"
+          # Tag = primeiros 7 chars do SHA — facilita rollback (deploy.sh
+          # aceita qualquer tag, basta achar a imagem no `k3s ctr images list`).
+          TAG="${SHA:0:7}"
+
+          ssh -p "$PORT" "$USER@$HOST" "cd $REMOTE_DIR && \
+            chmod +x deployment/scripts/*.sh && \
+            bash deployment/scripts/deploy.sh $TAG"
+
+      - name: Status check
+        env:
+          HOST: ${{ secrets.HOSTINGER_HOST }}
+          USER: ${{ secrets.HOSTINGER_USER }}
+          PORT: ${{ secrets.HOSTINGER_PORT }}
+        run: |
+          PORT="${PORT:-22}"
+          ssh -p "$PORT" "$USER@$HOST" "cd /home/${USER}/datajoin-airflow && bash deployment/scripts/status.sh"
+
+      - name: Cleanup
+        if: always()
+        run: rm -f /tmp/.env.prod ~/.ssh/id_ed25519

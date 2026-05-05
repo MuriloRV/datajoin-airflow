@@ -1,0 +1,36 @@
+name: "luminea"
+version: "0.1.0"
+config-version: 2
+
+profile: "luminea"
+
+model-paths: ["models"]
+analysis-paths: ["analyses"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+
+target-path: "target"
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+# Materializacao + schema literal por camada (medalhao). Schema usa
+# o macro custom em macros/generate_schema_name.sql pra evitar o
+# default do dbt que prefixa com profile.schema.
+# Tags por camada permitem `dbt build --select tag:staging tag:curated`.
+models:
+  luminea:
+    staging:
+      +materialized: incremental
+      +schema: luminea_staging
+      +tags: ["staging"]
+    curated:
+      +materialized: table
+      +schema: luminea_curated
+      +tags: ["curated"]
+    delivery:
+      +materialized: table
+      +schema: luminea_delivery
+      +tags: ["delivery"]

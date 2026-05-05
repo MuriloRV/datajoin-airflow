@@ -1,0 +1,11 @@
+psycopg[binary]==3.2.3
+httpx==0.27.2
+# pydantic NAO pinar — Airflow 3.x e' sensivel a versao especifica
+# (gotcha conhecido: 2.10+ removeu FieldInfo._copy que Airflow usa em
+# api_fastapi/core_api/base.py). A versao default do Airflow funciona.
+dbt-core==1.9.1
+dbt-postgres==1.9.0
+# dbt-bigquery==1.9.0  # habilitar quando houver tenant com BQ
+# Cosmos da Astronomer: orquestra dbt como tasks individuais no Airflow
+# (visibility por model no Graph view, lineage automatico).
+astronomer-cosmos==1.14.1

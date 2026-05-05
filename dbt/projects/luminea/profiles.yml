@@ -1,0 +1,21 @@
+# Profile do tenant Luminea.
+# Le envs DW_DEFAULT_* injetadas pela DAG via container Airflow.
+# Quando Luminea migrar para BigQuery, troca-se por bloco type: bigquery
+# sem mudar codigo da DAG nem dos modelos.
+
+luminea:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      host: "{{ env_var('DW_DEFAULT_HOST') }}"
+      port: "{{ env_var('DW_DEFAULT_PORT') | as_number }}"
+      user: "{{ env_var('DW_DEFAULT_USER') }}"
+      password: "{{ env_var('DW_DEFAULT_PASSWORD') }}"
+      dbname: "{{ env_var('DW_DEFAULT_DATABASE') }}"
+      # schema usado apenas como fallback — todos os models tem +schema
+      # explicito no dbt_project.yml (ver generate_schema_name macro).
+      schema: luminea_staging
+      threads: 2
+      keepalives_idle: 0
+      connect_timeout: 10

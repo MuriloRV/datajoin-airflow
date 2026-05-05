@@ -1,0 +1,22 @@
+# Prod overrides — VM Hostinger KVM 4 (16 GB)
+#
+# IMPORTANTE: Helm substitui LISTAS inteiras (nao faz merge). Se redeclarar
+# `env:` aqui, voce apaga todas as envs do base.yaml. Mantenha overrides em
+# campos escalares (resources, image.tag, replicas) — para acrescentar envs,
+# use o secret `datajoin-airflow-env` (manipulado pelo deploy.sh).
+
+images:
+  airflow:
+    repository: datajoin-airflow
+    # `tag` e' sobrescrito por --set images.airflow.tag=$GITHUB_SHA no deploy.sh.
+    # Se voce rodar deploy manualmente sem --set, ele usa `latest`.
+    tag: latest
+    pullPolicy: Never
+
+# Postgres metadata externo (Docker, mesmo host) — secret criado por
+# create-metadata-secret.sh aponta para o Service `dj-postgres` que e'
+# criado por setup-postgres-svc.sh.
+postgresql:
+  enabled: false
+data:
+  metadataSecretName: airflow-metadata-secret

@@ -1,0 +1,32 @@
+.git
+.github
+.claude
+.venv
+venv
+__pycache__
+*.py[cod]
+*.egg-info
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.idea
+.vscode
+.DS_Store
+
+# dbt build artifacts (regerados dentro do container)
+dbt/projects/*/target/
+dbt/projects/*/dbt_packages/
+dbt/projects/*/logs/
+
+# .env e secrets
+.env
+.env.*
+deployment/.env*
+
+# logs locais
+logs/
+*.log
+
+# arquivos de deploy nao precisam ir pra imagem
+deployment/
+README.md
