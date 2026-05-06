@@ -2,10 +2,9 @@
 .env.local
 .env.*.local
 
-# .env de produção (preenchido na VM ou pelo GitHub Actions a partir dos secrets).
+# .env de produção (fonte do secret AIRFLOW_DOTENV no GitHub).
 # Apenas o .env.prod.example é versionado.
-deployment/.env.prod
-deployment/.env
+.env.prod
 
 __pycache__/
 *.py[cod]

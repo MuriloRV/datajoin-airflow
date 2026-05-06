@@ -1,114 +1,197 @@
-name: Deploy Airflow (Hostinger VM)
+name: Build & Deploy Airflow (prod)
 
-# Pipeline de deploy: push em main -> SSH na VM -> build + helm upgrade.
-#
-# IMPORTANTE: este pipeline NAO usa docker-compose. O `docker-compose.yml`
-# da raiz e' EXCLUSIVAMENTE para iteracao local de devs. O deploy roda
-# Helm/k3s a partir de `deployment/`.
-
+# Trigger: push direto na main OU PR merge (PR merge gera push commit em main).
+# workflow_dispatch permite trigger manual via UI/CLI pra reruns/rollback.
 on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Tag de imagem pra deployar (default: sha-<commit-atual>). Use sha-<old-commit> pra rollback.'
+        required: false
+        default: ''
 
+# Serializa deploys: se vier outro push enquanto este roda, espera (não cancela
+# pra evitar deploy parcial). Concurrency em "main" — se mexer com staging, criar
+# outro grupo.
 concurrency:
-  group: deploy-airflow
+  group: deploy-airflow-prod
   cancel-in-progress: false
 
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+env:
+  REGISTRY: ghcr.io
+  # ghcr exige nome de repo lowercase. Usar variável computada (steps abaixo).
+  IMAGE_BASE: ghcr.io/${{ github.repository }}
 
+jobs:
+  build-and-push:
+    name: Build & push image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write       # pra pushar pro ghcr
+    outputs:
+      image_tag: ${{ steps.tag.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure SSH
-        env:
-          SSH_KEY: ${{ secrets.HOSTINGER_SSH_KEY }}
-        run: |
-          mkdir -p ~/.ssh
-          echo "$SSH_KEY" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -p "${HOSTINGER_PORT:-22}" -H "${{ secrets.HOSTINGER_HOST }}" >> ~/.ssh/known_hosts
+      - name: Compute lowercase image base
+        id: img
+        run: echo "base=$(echo ${{ env.IMAGE_BASE }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
 
-      - name: Render .env.prod from secrets
+      - name: Compute image tag
+        id: tag
         run: |
-          cat > /tmp/.env.prod <<EOF
-          POSTGRES_HOST_IP=${{ secrets.POSTGRES_HOST_IP }}
-          POSTGRES_PORT=${{ secrets.POSTGRES_PORT }}
-          POSTGRES_USER=${{ secrets.POSTGRES_USER }}
-          POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
-          POSTGRES_DB=${{ secrets.POSTGRES_DB }}
-          AIRFLOW_FERNET_KEY=${{ secrets.AIRFLOW_FERNET_KEY }}
-          AIRFLOW_SECRET_KEY=${{ secrets.AIRFLOW_SECRET_KEY }}
-          AIRFLOW_JWT_SECRET=${{ secrets.AIRFLOW_JWT_SECRET }}
-          SERVICE_TOKEN=${{ secrets.SERVICE_TOKEN }}
-          PLATFORM_API_URL=${{ secrets.PLATFORM_API_URL }}
-          DW_DB_USER=${{ secrets.DW_DB_USER }}
-          DW_DB_PASSWORD=${{ secrets.DW_DB_PASSWORD }}
-          DW_DB_NAME=${{ secrets.DW_DB_NAME }}
-          AIRFLOW_LOGS_DIR=${{ secrets.AIRFLOW_LOGS_DIR }}
+          if [ -n "${{ inputs.image_tag }}" ]; then
+            echo "tag=${{ inputs.image_tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=sha-${GITHUB_SHA::12}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Log in to ghcr
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # ─────────── airflow ───────────
+      # Imagem unica: apache/airflow:3.2.0-python3.13 + libpq + requirements +
+      # DAGs/plugins/dbt baked. Reutilizada pelos 5 services do compose
+      # (init, apiserver, scheduler, dag-processor, triggerer).
+      - name: Build & push airflow
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.img.outputs.base }}/airflow:main
+            ${{ steps.img.outputs.base }}/airflow:${{ steps.tag.outputs.tag }}
+          cache-from: type=gha,scope=airflow
+          cache-to: type=gha,mode=max,scope=airflow
+
+  deploy:
+    name: Deploy to VM
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read        # GITHUB_TOKEN pode ler ghcr — passamos pra VM
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup SSH key
+        run: |
+          set -x
+          mkdir -p ~/.ssh
+          # tr -d '\r' remove CRLF que possa vir do paste Windows->GH secret
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" | tr -d '\r' > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -t ed25519 -T 10 ${{ secrets.VM_HOST }} >> ~/.ssh/known_hosts
+          ssh-keygen -y -f ~/.ssh/deploy_key
+
+      - name: Ensure /opt/datajoin/airflow exists
+        run: |
+          # Idempotente — cria a pasta se ainda nao existir (1o deploy).
+          ssh -i ~/.ssh/deploy_key deploy@${{ secrets.VM_HOST }} \
+            'mkdir -p /opt/datajoin/airflow'
+
+      - name: Sync compose.yml to VM
+        run: |
+          scp -i ~/.ssh/deploy_key compose.prod.yml \
+            deploy@${{ secrets.VM_HOST }}:/opt/datajoin/airflow/compose.yml
+
+      - name: Materialize .env on VM (with IMAGE_TAG override)
+        env:
+          AIRFLOW_DOTENV: ${{ secrets.AIRFLOW_DOTENV }}
+          IMAGE_TAG: ${{ needs.build-and-push.outputs.image_tag }}
+        run: |
+          # Concatena AIRFLOW_DOTENV + linha IMAGE_TAG (sobrescreve qualquer
+          # IMAGE_TAG que o secret possa ter — workflow é fonte da verdade).
+          ssh -i ~/.ssh/deploy_key deploy@${{ secrets.VM_HOST }} \
+            "cat > /opt/datajoin/airflow/.env && chmod 600 /opt/datajoin/airflow/.env" <<EOF
+          $AIRFLOW_DOTENV
+          IMAGE_TAG=$IMAGE_TAG
           EOF
 
-      - name: Sync project to VM
-        env:
-          HOST: ${{ secrets.HOSTINGER_HOST }}
-          USER: ${{ secrets.HOSTINGER_USER }}
-          PORT: ${{ secrets.HOSTINGER_PORT }}
+      - name: Login to ghcr on VM
         run: |
-          PORT="${PORT:-22}"
-          REMOTE_DIR="/home/${USER}/datajoin-airflow"
+          echo "${{ secrets.GITHUB_TOKEN }}" | ssh -i ~/.ssh/deploy_key \
+            deploy@${{ secrets.VM_HOST }} \
+            "docker login ghcr.io -u ${{ github.actor }} --password-stdin"
 
-          ssh -p "$PORT" "$USER@$HOST" "mkdir -p $REMOTE_DIR"
-
-          # rsync do projeto inteiro EXCETO docker-compose (e' dev-only),
-          # .git, .github, .venv, dbt builds e o .env local.
-          rsync -az --delete \
-            -e "ssh -p $PORT" \
-            --exclude '.git/' \
-            --exclude '.github/' \
-            --exclude '.venv/' \
-            --exclude 'venv/' \
-            --exclude '__pycache__/' \
-            --exclude '*.pyc' \
-            --exclude 'docker-compose.yml' \
-            --exclude '.env' \
-            --exclude 'deployment/.env.prod' \
-            --exclude 'dbt/projects/*/target/' \
-            --exclude 'dbt/projects/*/dbt_packages/' \
-            --exclude 'dbt/projects/*/logs/' \
-            ./ "$USER@$HOST:$REMOTE_DIR/"
-
-          # Envia o .env.prod renderizado
-          scp -P "$PORT" /tmp/.env.prod "$USER@$HOST:$REMOTE_DIR/deployment/.env.prod"
-
-      - name: Run deploy on VM
-        env:
-          HOST: ${{ secrets.HOSTINGER_HOST }}
-          USER: ${{ secrets.HOSTINGER_USER }}
-          PORT: ${{ secrets.HOSTINGER_PORT }}
-          SHA: ${{ github.sha }}
+      - name: Ensure dj_network exists
         run: |
-          PORT="${PORT:-22}"
-          REMOTE_DIR="/home/${USER}/datajoin-airflow"
-          # Tag = primeiros 7 chars do SHA — facilita rollback (deploy.sh
-          # aceita qualquer tag, basta achar a imagem no `k3s ctr images list`).
-          TAG="${SHA:0:7}"
+          # Idempotente — nao falha se ja existe. dj_network e' compartilhada
+          # com datajoin-app e cloudflared.
+          ssh -i ~/.ssh/deploy_key deploy@${{ secrets.VM_HOST }} \
+            "docker network create dj_network 2>/dev/null || true"
 
-          ssh -p "$PORT" "$USER@$HOST" "cd $REMOTE_DIR && \
-            chmod +x deployment/scripts/*.sh && \
-            bash deployment/scripts/deploy.sh $TAG"
+      # NOTA arquitetural: deploy fragmentado em steps SSH independentes.
+      # Heredoc multi-comando trunca silenciosamente em algum ponto da stack
+      # (visto no datajoin-app — memory entry feedback_ssh_heredoc_silent_truncate).
 
-      - name: Status check
-        env:
-          HOST: ${{ secrets.HOSTINGER_HOST }}
-          USER: ${{ secrets.HOSTINGER_USER }}
-          PORT: ${{ secrets.HOSTINGER_PORT }}
+      - name: Pull image
         run: |
-          PORT="${PORT:-22}"
-          ssh -p "$PORT" "$USER@$HOST" "cd /home/${USER}/datajoin-airflow && bash deployment/scripts/status.sh"
+          ssh -i ~/.ssh/deploy_key deploy@${{ secrets.VM_HOST }} \
+            'cd /opt/datajoin/airflow && docker compose pull'
 
-      - name: Cleanup
+      - name: Run airflow db migrate + write auth file (idempotent)
+        # `compose run --rm` roda o airflow-init isolado: airflow db migrate +
+        # printf do JSON da senha do SimpleAuthManager. Idempotente — migrate
+        # do Airflow checa o que falta antes de aplicar. Equivale ao `alembic
+        # upgrade head` do datajoin-app.
+        run: |
+          ssh -i ~/.ssh/deploy_key deploy@${{ secrets.VM_HOST }} \
+            'cd /opt/datajoin/airflow && docker compose run --rm -T airflow-init'
+
+      - name: Compose up (force recreate + wait)
+        # --no-deps: nao sobe airflow-init de novo (one-shot ja rodou no step
+        # acima; depends_on dos services aponta pra ele).
+        run: |
+          ssh -i ~/.ssh/deploy_key deploy@${{ secrets.VM_HOST }} \
+            'cd /opt/datajoin/airflow && docker compose up -d --no-deps --remove-orphans --force-recreate --wait airflow-apiserver airflow-scheduler airflow-dag-processor airflow-triggerer'
+
+      - name: Compose status
+        run: |
+          ssh -i ~/.ssh/deploy_key deploy@${{ secrets.VM_HOST }} \
+            'cd /opt/datajoin/airflow && docker compose ps'
+
+      - name: Health check (internal — no public URL needed)
+        run: |
+          # Curl da propria docker network — nao depende do CF tunnel estar
+          # com rota airflow.<DOMAIN> configurada. /api/v2/version e' endpoint
+          # publico do Airflow 3.x (sem auth), retorna 200 quando UI/API up.
+          ssh -i ~/.ssh/deploy_key deploy@${{ secrets.VM_HOST }} 'bash -s' <<'EOF'
+          set -e
+          for i in $(seq 1 30); do
+            status=$(docker run --rm --network dj_network curlimages/curl:latest \
+              -sS -o /dev/null -w "%{http_code}" --max-time 3 \
+              http://airflow-apiserver:8080/api/v2/version || echo "000")
+            if [ "$status" = "200" ]; then
+              echo "Airflow API health OK"
+              exit 0
+            fi
+            echo "attempt $i: status=$status — waiting 2s..."
+            sleep 2
+          done
+          echo "Health check failed after 60s"
+          docker compose -f /opt/datajoin/airflow/compose.yml logs airflow-apiserver --tail 50
+          exit 1
+          EOF
+
+      - name: Prune stale Docker images on VM
+        # Roda APOS health check passar — se algo falhou antes, mantem
+        # imagens pra debug. Tags antigas (sha-<commit-x> nao em uso) caem.
+        run: |
+          ssh -i ~/.ssh/deploy_key deploy@${{ secrets.VM_HOST }} \
+            'docker image prune -af'
+
+      - name: Cleanup SSH key from runner
         if: always()
-        run: rm -f /tmp/.env.prod ~/.ssh/id_ed25519
+        run: rm -f ~/.ssh/deploy_key

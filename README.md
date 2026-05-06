@@ -8,15 +8,16 @@ Repositório de **Airflow + DAGs + plugins (conectores ETL) + dbt projects** da 
 
 | | Dev (local) | Prod (Hostinger VM) |
 |---|---|---|
-| Como roda | `docker compose up` (este repo) | k3s + Helm Chart oficial |
+| Como roda | `docker compose -f docker-compose.yml up` | `docker compose -f compose.prod.yml up` |
 | Onde mora | sua máquina | VM Hostinger KVM 4 (16 GB) |
 | DAGs/plugins | volume mount (hot reload) | baked na imagem |
-| Postgres | container do `datajoin-app` | container Docker do `datajoin-app` na MESMA VM |
-| Logs | volume `airflow_logs` | hostPath `/var/log/datajoin-airflow` (acessível via `tail` no host) |
-| Pipeline | NÃO entra no pipeline | `.github/workflows/deploy.yml` (push em main → SSH → Helm) |
-| Detalhes | seções abaixo | [`deployment/README.md`](deployment/README.md) |
+| Imagem | build local | `ghcr.io/MuriloRV/datajoin-airflow/airflow:<tag>` (CI builda+pusha) |
+| Postgres | container do `datajoin-app` | container Docker do `datajoin-app` na MESMA VM (`dj_network`) |
+| UI | `localhost:8080` (porta exposta) | `airflow.datajoin.cloud` via Cloudflare Tunnel (sem porta exposta) |
+| Logs | named volume `airflow_logs` | named volume `airflow_logs` (acesso via `docker compose logs`) |
+| Pipeline | NÃO entra no pipeline | `.github/workflows/deploy.yml` (push em main → SSH → compose up) |
 
-> O `docker-compose.yml` é **dev-only**. O pipeline de deploy NÃO o usa — buildam a imagem direto de `docker/Dockerfile` e rodam `helm upgrade`.
+> O `docker-compose.yml` é **dev-only**. O pipeline de deploy usa `compose.prod.yml`.
 
 ## Pré-requisitos (dev)
 
@@ -54,14 +55,11 @@ datajoin-airflow/
 ├── docker/
 │   ├── Dockerfile                     # apache/airflow:3.2.0-python3.13 + libpq + requirements + DAGs/plugins/dbt baked
 │   └── requirements.txt               # libs Python adicionais (cosmos, conectores, etc)
-├── docker-compose.yml                 # DEV-ONLY — 4 services Airflow (init/api/dag-processor/scheduler)
-├── deployment/                        # PROD — Helm values + scripts de deploy no k3s da Hostinger
-│   ├── values/{base,prod}.yaml
-│   ├── scripts/{setup-k3s,setup-postgres-svc,setup-logs-volume,deploy,...}.sh
-│   ├── .env.prod.example              # secrets do deploy (gerado no servidor pelo pipeline)
-│   └── README.md
-├── .github/workflows/deploy.yml       # push em main -> SSH na VM -> helm upgrade
-└── .env.example                       # FERNET_KEY, JWT_SECRET, SERVICE_TOKEN, ... (DEV)
+├── docker-compose.yml                 # DEV-ONLY — 5 services Airflow (init/api/dag-processor/scheduler/triggerer)
+├── compose.prod.yml                   # PROD — mesmos services com imagem ghcr + recursos limits, sem ports
+├── .github/workflows/deploy.yml       # push em main -> build+push ghcr -> SSH na VM -> compose up
+├── .env.example                       # FERNET_KEY, JWT_SECRET, SERVICE_TOKEN, ADMIN_PASSWORD ... (DEV)
+└── .env.prod.example                  # template do .env de prod (renderizado pelo CI a partir de secrets)
 ```
 
 ## Como conversa com o `datajoin-app`
@@ -121,6 +119,51 @@ docker compose up -d airflow-init  # roda `airflow db migrate` de novo
 
 ## Deploy em produção (Hostinger VM)
 
-TL;DR: na VM, `bash deployment/scripts/setup-k3s.sh` uma vez, depois `bash deployment/scripts/deploy.sh`. Pipeline (`.github/workflows/deploy.yml`) faz isso automaticamente em pushes para `main`.
+Push em `main` → workflow `.github/workflows/deploy.yml`:
 
-Detalhes em [`deployment/README.md`](deployment/README.md): topologia, dimensionamento (~10 GB pro Airflow, ~6 GB pro `datajoin-app`), como o k3s alcança o Postgres do Docker, hostPath dos logs, secrets do GitHub Actions, troubleshooting.
+1. Builda `docker/Dockerfile` (DAGs/plugins/dbt baked) e pusha pra `ghcr.io/MuriloRV/datajoin-airflow/airflow:sha-<commit>`
+2. SSH na VM (`deploy@$VM_HOST`), materializa `/opt/datajoin/airflow/.env` a partir do secret `AIRFLOW_DOTENV` + injeta `IMAGE_TAG`
+3. `docker compose pull` → `docker compose run --rm airflow-init` (= `airflow db migrate` + escreve auth file) → `docker compose up -d --no-deps --force-recreate --wait` (4 services principais)
+4. Health check via `dj_network` em `http://airflow-apiserver:8080/api/v2/version`
+5. `docker image prune -af` (rollback continua possível via re-pull do ghcr)
+
+### UI pública via Cloudflare Tunnel
+
+A UI roda **sem porta exposta no host** — chega via CF tunnel. Pra rotear `airflow.datajoin.cloud`:
+
+1. Painel Zero Trust → Networks → Tunnels → `datajoin-app-prod` → **Public Hostnames** → **Add a public hostname**
+2. Subdomain: `airflow`, Domain: `datajoin.cloud`
+3. Service: HTTP → URL `airflow-apiserver:8080`
+4. Save (DNS propaga em ~30s)
+
+O `cloudflared` já está na `dj_network`, então resolve `airflow-apiserver` por DNS interno do Docker.
+
+### Secrets do GitHub Actions
+
+| Secret | Valor |
+|---|---|
+| `DEPLOY_SSH_KEY` | Private key (ed25519) com acesso ao user `deploy` na VM (mesma usada pelo `datajoin-app`) |
+| `VM_HOST` | IP/DNS da VM Hostinger |
+| `AIRFLOW_DOTENV` | Conteúdo completo do `.env` de prod (ver `.env.prod.example`) |
+
+### Recursos (compose.prod.yml — limits ≈ 6.3 GB; sobra pro datajoin-app)
+
+| Service | Memory limit | CPU limit |
+|---|---|---|
+| airflow-apiserver | 768Mi | 1 |
+| airflow-scheduler | 4Gi | 2 |
+| airflow-dag-processor | 1Gi | 1 |
+| airflow-triggerer | 512Mi | 0.5 |
+
+`PARALLELISM=8`, `MAX_ACTIVE_RUNS_PER_DAG=1`, timezone `America/Sao_Paulo`. Ajuste em `compose.prod.yml`.
+
+### Acesso aos logs em prod
+
+Como é named volume Docker (sem hostPath), o tail é via container:
+
+```bash
+ssh deploy@<vm>
+docker compose -f /opt/datajoin/airflow/compose.yml logs -f --tail=200 airflow-scheduler
+docker compose -f /opt/datajoin/airflow/compose.yml exec airflow-scheduler \
+  tail -f /opt/airflow/logs/dag_id=<dag>/run_id=<run>/task_id=<task>/attempt=1.log
+```
