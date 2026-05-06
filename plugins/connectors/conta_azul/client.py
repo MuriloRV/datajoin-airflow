@@ -490,6 +490,218 @@ class ContaAzulClient:
                 return None
             raise
 
+    def get_contrato_detalhe(self, contrato_id: str) -> dict | None:
+        """GET /v1/contratos/{id}."""
+        if self._mock:
+            return None
+        try:
+            return self._request("GET", f"/contratos/{contrato_id}")
+        except ContaAzulApiError as e:
+            if "404" in str(e):
+                return None
+            raise
+
+    def get_produto_detalhe(self, produto_id: str) -> dict | None:
+        """GET /v1/produtos/{id}."""
+        if self._mock:
+            return None
+        try:
+            return self._request("GET", f"/produtos/{produto_id}")
+        except ContaAzulApiError as e:
+            if "404" in str(e):
+                return None
+            raise
+
+    def get_servico_detalhe(self, servico_id: str) -> dict | None:
+        """GET /v1/servicos/{id} (fallback /v1/servico/{id})."""
+        if self._mock:
+            return None
+        try:
+            return self._request("GET", f"/servicos/{servico_id}")
+        except ContaAzulApiError as e:
+            if "404" in str(e):
+                try:
+                    return self._request("GET", f"/servico/{servico_id}")
+                except ContaAzulApiError as e2:
+                    if "404" in str(e2):
+                        return None
+                    raise
+            raise
+
+    def get_saldo_atual(self, conta_financeira_id: str) -> dict | None:
+        """GET /v1/conta-financeira/{id}/saldo-atual."""
+        if self._mock:
+            return None
+        try:
+            return self._request(
+                "GET", f"/conta-financeira/{conta_financeira_id}/saldo-atual"
+            )
+        except ContaAzulApiError as e:
+            if "404" in str(e):
+                log.warning(
+                    "Conta Azul: /conta-financeira/%s/saldo-atual 404 — ignorando",
+                    conta_financeira_id,
+                )
+                return None
+            raise
+
+    def get_cobranca(self, id_cobranca: str) -> dict | None:
+        """GET /v1/financeiro/eventos-financeiros/contas-a-receber/cobranca/{id}."""
+        if self._mock:
+            return None
+        try:
+            return self._request(
+                "GET",
+                f"/financeiro/eventos-financeiros/contas-a-receber/cobranca/{id_cobranca}",
+            )
+        except ContaAzulApiError as e:
+            if "404" in str(e):
+                return None
+            raise
+
+    def get_venda_detalhe(self, venda_id: str) -> dict | None:
+        """GET /v1/vendas/{id} (singular alias /v1/venda/{id} pode tb funcionar).
+
+        Doc oficial expoe /v1/vendas/{id}. Tentamos esse path primeiro,
+        com fallback pra /v1/venda/{id} caso retorne 404 — mesma quirk
+        de /vendas vs /venda/busca observada no extractor de vendas.
+        """
+        if self._mock:
+            return None
+        try:
+            return self._request("GET", f"/vendas/{venda_id}")
+        except ContaAzulApiError as e:
+            if "404" in str(e):
+                # Fallback singular — algumas tenants ainda respondem em /venda/{id}.
+                try:
+                    return self._request("GET", f"/venda/{venda_id}")
+                except ContaAzulApiError as e2:
+                    if "404" in str(e2):
+                        log.warning(
+                            "Conta Azul: /vendas/%s e /venda/%s 404 — ignorando",
+                            venda_id, venda_id,
+                        )
+                        return None
+                    raise
+            raise
+
+    def list_venda_itens(self, venda_id: str) -> list[dict]:
+        """GET /v1/vendas/{id}/itens. Fallback singular /v1/venda/{id}/itens."""
+        if self._mock:
+            return []
+        try:
+            data = self._request("GET", f"/vendas/{venda_id}/itens")
+        except ContaAzulApiError as e:
+            if "404" in str(e):
+                try:
+                    data = self._request("GET", f"/venda/{venda_id}/itens")
+                except ContaAzulApiError as e2:
+                    if "404" in str(e2):
+                        return []
+                    raise
+            else:
+                raise
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            return self._extract_items(f"/vendas/{venda_id}/itens", data)
+        return []
+
+    def get_nota_fiscal_detalhe(self, chave_acesso: str) -> dict | None:
+        """GET /v1/notas-fiscais/{chave} — detalhe completo da NFe (com itens, transportadora, impostos)."""
+        if self._mock:
+            return None
+        try:
+            return self._request("GET", f"/notas-fiscais/{chave_acesso}")
+        except ContaAzulApiError as e:
+            if "404" in str(e):
+                log.warning(
+                    "Conta Azul: /notas-fiscais/%s 404 — ignorando",
+                    chave_acesso,
+                )
+                return None
+            raise
+
+    def list_parcelas_de_evento(self, evento_id: str) -> list[dict]:
+        """GET /v1/financeiro/eventos-financeiros/{id_evento}/parcelas.
+
+        Retorna lista crua de parcelas associadas a 1 evento financeiro
+        (conta_a_receber ou conta_a_pagar). Devolve dict cru (sem schema)
+        — caller usa apenas pra extrair os IDs e em seguida chamar
+        get_parcela_detalhe().
+
+        404 -> []. Outros erros propagam.
+        """
+        if self._mock:
+            return []
+        try:
+            data = self._request(
+                "GET", f"/financeiro/eventos-financeiros/{evento_id}/parcelas"
+            )
+        except ContaAzulApiError as e:
+            if "404" in str(e):
+                log.warning(
+                    "Conta Azul: /eventos-financeiros/%s/parcelas 404 — ignorando",
+                    evento_id,
+                )
+                return []
+            raise
+        # Pode vir como envelope ou lista direta — normaliza.
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            return self._extract_items(
+                f"/eventos-financeiros/{evento_id}/parcelas", data
+            )
+        return []
+
+    def get_parcela_detalhe(self, parcela_id: str) -> dict | None:
+        """GET /v1/financeiro/eventos-financeiros/parcelas/{id}.
+
+        Retorna dict cru — caller valida via pydantic ParcelaDetalhe.
+        Endpoint critico: e' aqui que vem `data_pagamento`, juros, multa,
+        valor liquido e forma_pagamento por parcela.
+        """
+        if self._mock:
+            return None
+        try:
+            return self._request(
+                "GET", f"/financeiro/eventos-financeiros/parcelas/{parcela_id}"
+            )
+        except ContaAzulApiError as e:
+            if "404" in str(e):
+                log.warning(
+                    "Conta Azul: /parcelas/%s 404 — ignorando", parcela_id
+                )
+                return None
+            raise
+
+    def list_baixas_de_parcela(self, parcela_id: str) -> list[dict]:
+        """GET /v1/financeiro/eventos-financeiros/parcelas/{id}/baixas.
+
+        Lista as baixas (pagamentos parciais ou totais) realizadas em 1
+        parcela. Granularidade fina — uma parcela pode ter N baixas.
+        404/sem baixas -> [].
+        """
+        if self._mock:
+            return []
+        try:
+            data = self._request(
+                "GET",
+                f"/financeiro/eventos-financeiros/parcelas/{parcela_id}/baixas",
+            )
+        except ContaAzulApiError as e:
+            if "404" in str(e):
+                return []
+            raise
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            return self._extract_items(
+                f"/parcelas/{parcela_id}/baixas", data
+            )
+        return []
+
     def get_pessoa_detalhe(self, pessoa_id: str) -> PessoaDetalhe | None:
         """GET /v1/pessoas/{id} — detalhe completo com nested.
 

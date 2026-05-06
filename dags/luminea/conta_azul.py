@@ -91,6 +91,7 @@ ENTITIES: list[str] = [
     "contas_a_pagar",                       # incremental + window
     "transferencias",                       # window 5a
     "saldo_inicial",                        # window 1a
+    "eventos_alteracoes",                   # CDC (incremental)
     # Comercial
     "vendedores",
     "vendas",                               # incremental
@@ -101,10 +102,36 @@ ENTITIES: list[str] = [
 ]
 
 # Entities que dependem de raw populado de outras entities — rodam DEPOIS.
-# pessoas_detalhe le IDs de raw.conta_azul__pessoas e busca /pessoas/{id}
-# com N+1, entao precisa que pessoas extract ja tenha rodado.
+# Le IDs de raw.<source> e faz N+1 nos endpoints de detalhe.
+# Inclui:
+#   - pessoas_detalhe       <- pessoas
+#   - parcelas_detalhe      <- contas_a_receber + contas_a_pagar
+#   - vendas_detalhe        <- vendas
+#   - vendas_itens          <- vendas
+#   - notas_fiscais_itens   <- notas_fiscais (chave_acesso)
+#   - contratos_detalhe     <- contratos
+#   - produtos_detalhe      <- produtos
+#   - servicos_detalhe      <- servicos
+#   - saldo_atual           <- contas_financeiras (snapshot diario)
 ENTITIES_DEPENDENT: list[str] = [
     "pessoas_detalhe",
+    "parcelas_detalhe",
+    "vendas_detalhe",
+    "vendas_itens",
+    "notas_fiscais_itens",
+    "contratos_detalhe",
+    "produtos_detalhe",
+    "servicos_detalhe",
+    "saldo_atual",
+]
+
+# Entities que dependem das DEPENDENTES (cadeia de 2 niveis de N+1).
+# Inclui:
+#   - baixas        <- parcelas_detalhe (parcela_id -> /parcelas/{id}/baixas)
+#   - cobrancas     <- parcelas_detalhe + contas_a_receber (scan de cobranca_ids no jsonb)
+ENTITIES_TRANSITIVE: list[str] = [
+    "baixas",
+    "cobrancas",
 ]
 
 # Cosmos lê o profiles.yml do proprio projeto dbt — preserva o macro
@@ -237,7 +264,19 @@ def luminea__conta_azul_etl():
     extract_dependent = extract_entity_to_raw.override(
         task_id="extract_dependent_to_raw",
     ).expand(entity_name=ENTITIES_DEPENDENT)
-    chain(open_sync, extract, extract_dependent, dbt_staging_curated, dbt_delivery)
+    # Transitivas rodam APOS as dependentes (cadeia de 2 niveis de N+1):
+    # ex: baixas le parcela_ids de raw.parcelas_detalhe.
+    extract_transitive = extract_entity_to_raw.override(
+        task_id="extract_transitive_to_raw",
+    ).expand(entity_name=ENTITIES_TRANSITIVE)
+    chain(
+        open_sync,
+        extract,
+        extract_dependent,
+        extract_transitive,
+        dbt_staging_curated,
+        dbt_delivery,
+    )
 
 
 luminea__conta_azul_etl()

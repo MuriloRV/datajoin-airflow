@@ -349,6 +349,216 @@ sources:
           - name: loaded_at
             data_tests: [not_null]
 
+      # ─── Detalhe / granularidade fina (N+1) ───
+      - name: conta_azul__parcelas_detalhe
+        description: "Detalhe de parcela — endpoint /v1/financeiro/eventos-financeiros/parcelas/{id}. Tem data_pagamento, juros, multa, valor_liquido, forma_pagamento (campos AUSENTES em contas_a_*)."
+        columns:
+          - name: id
+            data_tests: [not_null, unique]
+          - name: evento_financeiro_id
+            description: "FK pra contas_a_receber.id ou contas_a_pagar.id."
+          - name: data_pagamento
+          - name: data_vencimento
+          - name: valor_liquido
+          - name: juros
+          - name: multa
+          - name: forma_pagamento
+          - name: conta_financeira_id
+          - name: status
+          - name: raw
+          - name: loaded_at
+            data_tests: [not_null]
+
+      - name: conta_azul__baixas
+        description: "Baixas (pagamentos efetivos) por parcela — endpoint /v1/financeiro/eventos-financeiros/parcelas/{id}/baixas. Granularidade fina do que foi pago, quando, como."
+        columns:
+          - name: id
+            data_tests: [not_null, unique]
+          - name: parcela_id
+            description: "FK pra parcelas_detalhe.id."
+          - name: data_pagamento
+          - name: valor
+          - name: juros
+          - name: multa
+          - name: desconto
+          - name: forma_pagamento
+          - name: conta_financeira_id
+          - name: raw
+          - name: loaded_at
+            data_tests: [not_null]
+
+      - name: conta_azul__cobrancas
+        description: "Cobrancas (boleto/PIX) — endpoint /v1/financeiro/eventos-financeiros/contas-a-receber/cobranca/{id}. Status do funil: AGUARDANDO_CONFIRMACAO, REGISTRADO, QUITADO, CANCELADO, INVALIDO, EXPIRADO."
+        columns:
+          - name: id
+            data_tests: [not_null, unique]
+          - name: status
+          - name: url
+          - name: valor
+          - name: tipo
+          - name: data_vencimento
+          - name: data_emissao
+          - name: raw
+          - name: loaded_at
+            data_tests: [not_null]
+
+      - name: conta_azul__eventos_alteracoes
+        description: "CDC de eventos financeiros — endpoint /v1/financeiro/eventos-financeiros/alteracoes. Tabela auxiliar de IDs alterados (suporta carga incremental fina)."
+        columns:
+          - name: id
+            data_tests: [not_null, unique]
+          - name: data_alteracao
+          - name: tipo_evento
+          - name: raw
+          - name: loaded_at
+            data_tests: [not_null]
+
+      - name: conta_azul__saldo_atual
+        description: "Snapshot diario de saldo por conta financeira — endpoint /v1/conta-financeira/{id}/saldo-atual. PK = hash(conta, snapshot_date) — historico append-only entre dias."
+        columns:
+          - name: id
+            data_tests: [not_null, unique]
+          - name: conta_financeira_id
+          - name: saldo_atual
+          - name: snapshot_date
+          - name: data_snapshot
+          - name: raw
+          - name: loaded_at
+            data_tests: [not_null]
+
+      - name: conta_azul__vendas_detalhe
+        description: "Detalhe de venda — endpoint /v1/vendas/{id}. Adiciona condicao_pagamento, parcelas, frete, impostos totais, natureza_operacao."
+        columns:
+          - name: id
+            data_tests: [not_null, unique]
+          - name: numero
+          - name: situacao
+          - name: data_emissao
+          - name: data_alteracao
+          - name: valor_bruto
+          - name: valor_desconto
+          - name: valor_frete
+          - name: valor_impostos
+          - name: valor_liquido
+          - name: condicao_pagamento
+          - name: parcelas
+          - name: endereco_entrega
+          - name: raw
+          - name: loaded_at
+            data_tests: [not_null]
+
+      - name: conta_azul__vendas_itens
+        description: "Itens de venda (line items) — endpoint /v1/vendas/{id}/itens. 1 row = 1 produto/servico vendido. Replace por venda_id."
+        columns:
+          - name: id
+            data_tests: [not_null, unique]
+          - name: venda_id
+          - name: produto_id
+          - name: servico_id
+          - name: descricao
+          - name: codigo
+          - name: quantidade
+          - name: valor_unitario
+          - name: desconto
+          - name: valor_total
+          - name: cfop
+          - name: ncm
+          - name: unidade
+          - name: raw
+          - name: loaded_at
+            data_tests: [not_null]
+
+      - name: conta_azul__notas_fiscais_itens
+        description: "Itens de NFe — desempacotados de /v1/notas-fiscais/{chave}. Replace por chave_acesso."
+        columns:
+          - name: id
+            data_tests: [not_null, unique]
+          - name: nota_fiscal_id
+          - name: chave_acesso
+          - name: numero_item
+          - name: produto_id
+          - name: codigo
+          - name: descricao
+          - name: ncm
+          - name: cfop
+          - name: quantidade
+          - name: valor_unitario
+          - name: valor_total
+          - name: valor_icms
+          - name: valor_ipi
+          - name: valor_pis
+          - name: valor_cofins
+          - name: raw
+          - name: loaded_at
+            data_tests: [not_null]
+
+      - name: conta_azul__contratos_detalhe
+        description: "Detalhe de contrato — endpoint /v1/contratos/{id}. Adiciona composicao_de_valor, condicao_pagamento, configuracao_recorrencia, termos."
+        columns:
+          - name: id
+            data_tests: [not_null, unique]
+          - name: numero
+          - name: descricao
+          - name: cliente
+          - name: vendedor
+          - name: composicao_de_valor
+          - name: condicao_pagamento
+          - name: configuracao_recorrencia
+          - name: termos
+          - name: data_emissao
+          - name: data_inicio
+          - name: data_fim
+          - name: status
+          - name: valor_bruto
+          - name: valor_liquido
+          - name: raw
+          - name: loaded_at
+            data_tests: [not_null]
+
+      - name: conta_azul__produtos_detalhe
+        description: "Detalhe de produto — endpoint /v1/produtos/{id}. Adiciona tributacao (ICMS/IPI/PIS/COFINS), dimensoes (peso, altura, largura, comprimento), fotos."
+        columns:
+          - name: id
+            data_tests: [not_null, unique]
+          - name: nome
+          - name: codigo
+          - name: descricao
+          - name: preco
+          - name: custo
+          - name: estoque
+          - name: ncm
+          - name: cest
+          - name: peso
+          - name: altura
+          - name: largura
+          - name: comprimento
+          - name: tributacao
+          - name: fotos
+          - name: status
+          - name: raw
+          - name: loaded_at
+            data_tests: [not_null]
+
+      - name: conta_azul__servicos_detalhe
+        description: "Detalhe de servico — endpoint /v1/servicos/{id}. Adiciona tributacao (ISS/PIS/COFINS), codigo de servico municipal, observacoes fiscais."
+        columns:
+          - name: id
+            data_tests: [not_null, unique]
+          - name: nome
+          - name: codigo
+          - name: descricao
+          - name: preco
+          - name: custo
+          - name: aliquota_iss
+          - name: codigo_servico_municipal
+          - name: tributacao
+          - name: observacao
+          - name: status
+          - name: tipo_servico
+          - name: raw
+          - name: loaded_at
+            data_tests: [not_null]
+
       - name: conta_azul__vendas
         description: "Vendas (orcamentos/pedidos/vendas/NFs) — endpoint /v1/venda/busca. Schema tentativo, raw jsonb completo preservado."
         columns:
