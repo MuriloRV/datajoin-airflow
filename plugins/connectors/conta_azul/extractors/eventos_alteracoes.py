@@ -13,8 +13,17 @@ Nao substitui contas_a_receber/pagar — e' um indicador. Pode ser usado
 em runs futuras pra orientar buscas de detalhe (parcelas/baixas) so dos
 eventos que de fato mudaram.
 
-Watermark: max(data_alteracao). Janela default: 30 dias retroativos no
-1o run; depois sobe pelo watermark.
+Watermark: o endpoint /alteracoes retorna apenas IDs (sem
+`data_alteracao` no item), entao nao da pra extrair watermark do payload.
+Em vez disso, **cravamos o `data_fim` da janela ANTES de fazer
+qualquer request** e usamos como watermark. Garante:
+
+  - Proxima run usa esse valor como `data_inicio` -> nao perde nada.
+  - Mesmo que um evento seja alterado durante a run (entre 2 paginas),
+    a captura proxima vai pegar — porque o watermark e' o instante
+    antes do 1o request, nao depois do ultimo.
+
+Janela default: 30 dias retroativos no 1o run; depois sobe pelo watermark.
 """
 from __future__ import annotations
 
@@ -34,7 +43,7 @@ class EventosAlteracoesExtractor(Extractor):
     NAME = "eventos_alteracoes"
     SCHEMA = EventoAlteracao
     INCREMENTAL_FIELD = "data_alteracao"
-    INCREMENTAL_PARAM = "data_alteracao_de"
+    INCREMENTAL_PARAM = "data_inicio"
 
     DDL = """
     CREATE TABLE IF NOT EXISTS "{schema}"."conta_azul__eventos_alteracoes" (
@@ -61,7 +70,12 @@ class EventosAlteracoesExtractor(Extractor):
     def fetch(self, client: Any, **kwargs: Any) -> Iterator[EventoAlteracao]:
         watermark = kwargs.get("watermark")
         # Janela rolante: 30 dias retroativos no 1o run; watermark depois.
+        # `ate` e' cravado AGORA, antes de qualquer request — vira o
+        # watermark. watermark_value() devolve esse instante pro loader
+        # gravar. Garante idempotencia mesmo com eventos alterados durante
+        # a run (entre paginas).
         ate = datetime.now(timezone.utc).replace(microsecond=0)
+        self._janela_ate = ate
         if watermark and watermark.get("value"):
             wm_str = watermark["value"].split(".")[0].split("+")[0].rstrip("Z")
             de_str = wm_str
@@ -77,10 +91,16 @@ class EventosAlteracoesExtractor(Extractor):
             "/financeiro/eventos-financeiros/alteracoes",
             EventoAlteracao,
             extra_params={
-                "data_alteracao_de": de_str,
-                "data_alteracao_ate": ate_str,
+                "data_inicio": de_str,
+                "data_fim": ate_str,
             },
         )
+
+    def watermark_value(self, item: EventoAlteracao) -> Any:
+        # API /alteracoes nao retorna data_alteracao no item — usamos
+        # o data_fim cravado em fetch() como watermark estavel. Resultado:
+        # mesmo que zero items voltem da API, o watermark avanca.
+        return getattr(self, "_janela_ate", None)
 
     def serialize_for_upsert(self, item: EventoAlteracao) -> dict[str, Any]:
         raw_dict = item.model_dump(mode="json")

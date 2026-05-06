@@ -270,3 +270,95 @@ models:
         description: "'ORCAMENTO' | 'PEDIDO' | 'VENDA' | 'NOTA_FISCAL'."
       - name: staged_at
         data_tests: [not_null]
+
+  # ─── Granularidade fina (parcelas, baixas, cobrancas) ───
+  - name: stg_conta_azul__parcelas_detalhe
+    description: "Parcelas de eventos financeiros (a receber/pagar). 1 row por parcela; aqui mora data_pagamento."
+    columns:
+      - name: parcela_id
+        data_tests: [not_null, unique]
+      - name: staged_at
+        data_tests: [not_null]
+
+  - name: stg_conta_azul__baixas
+    description: "Pagamentos efetivos (parciais ou totais) de parcelas. 1 row por pagamento."
+    columns:
+      - name: baixa_id
+        data_tests: [not_null, unique]
+      - name: staged_at
+        data_tests: [not_null]
+
+  - name: stg_conta_azul__cobrancas
+    description: "Cobrancas (boletos/PIX) emitidas pra parcelas de contas a receber."
+    columns:
+      - name: cobranca_id
+        data_tests: [not_null, unique]
+      - name: staged_at
+        data_tests: [not_null]
+
+  # ─── CDC + saldo snapshot ───
+  - name: stg_conta_azul__eventos_alteracoes
+    description: "Log auxiliar CDC — IDs de eventos financeiros alterados num intervalo."
+    columns:
+      - name: evento_id
+        data_tests: [not_null, unique]
+      - name: staged_at
+        data_tests: [not_null]
+
+  - name: stg_conta_azul__saldo_atual
+    description: "Snapshot diario de saldo por conta financeira. PK natural (conta x snapshot_date)."
+    columns:
+      - name: saldo_atual_id
+        data_tests: [not_null, unique]
+      - name: staged_at
+        data_tests: [not_null]
+
+  # ─── Granularidade comercial (linhas de venda/NF) ───
+  - name: stg_conta_azul__vendas_itens
+    description: "Itens (linhas) de venda. 1 row = 1 SKU vendido."
+    columns:
+      - name: venda_item_id
+        data_tests: [not_null, unique]
+      - name: staged_at
+        data_tests: [not_null]
+
+  - name: stg_conta_azul__notas_fiscais_itens
+    description: "Itens (linhas) de NFe com tributos por linha."
+    columns:
+      - name: nota_item_id
+        data_tests: [not_null, unique]
+      - name: staged_at
+        data_tests: [not_null]
+
+  # ─── Detalhes (enriquecimento de dimensoes/fatos) ───
+  - name: stg_conta_azul__vendas_detalhe
+    description: "Detalhe completo de venda. Acrescenta condicao_pagamento, parcelas, frete, impostos."
+    columns:
+      - name: venda_id
+        data_tests: [not_null, unique]
+      - name: staged_at
+        data_tests: [not_null]
+
+  - name: stg_conta_azul__contratos_detalhe
+    description: "Detalhe completo de contrato. Composicao_de_valor, recorrencia, termos."
+    columns:
+      - name: contrato_id
+        data_tests: [not_null, unique]
+      - name: staged_at
+        data_tests: [not_null]
+
+  - name: stg_conta_azul__produtos_detalhe
+    description: "Detalhe completo de produto. Tributacao, dimensoes, fotos, NCM/CEST."
+    columns:
+      - name: produto_id
+        data_tests: [not_null, unique]
+      - name: staged_at
+        data_tests: [not_null]
+
+  - name: stg_conta_azul__servicos_detalhe
+    description: "Detalhe completo de servico. ISS, codigo municipal, tributacao detalhada."
+    columns:
+      - name: servico_id
+        data_tests: [not_null, unique]
+      - name: staged_at
+        data_tests: [not_null]

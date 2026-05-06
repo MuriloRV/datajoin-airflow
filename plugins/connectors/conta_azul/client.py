@@ -119,6 +119,7 @@ class ContaAzulClient:
         *,
         mock: bool = False,
         conn_id: str | None = None,
+        allow_refresh: bool = True,
     ):
         self._client_id = client_id
         self._client_secret = client_secret
@@ -131,6 +132,11 @@ class ContaAzulClient:
         # Sem conn_id, refresh ainda funciona em memoria mas a proxima
         # execucao da DAG vai falhar — refresh_token e' uso unico.
         self._conn_id = conn_id
+        # allow_refresh=False: client levanta ContaAzulAuthError em vez de
+        # tentar refrescar. Usado nas tasks paralelas de extract pra evitar
+        # race no refresh_token (uso unico) — apenas a task `ensure_token_fresh`
+        # do inicio da DAG deve refrescar.
+        self._allow_refresh = allow_refresh
 
         if not mock and not (client_id and client_secret and refresh_token):
             raise ValueError(
@@ -143,14 +149,21 @@ class ContaAzulClient:
 
     @classmethod
     def from_airflow_connection(
-        cls, conn_id: str, *, mock: bool = False
+        cls, conn_id: str, *, mock: bool = False, allow_refresh: bool = False
     ) -> "ContaAzulClient":
         """Constrói client a partir de uma Connection do Airflow.
 
         Em mock=True, ignora a Connection (útil pra dev local sem creds).
+
+        `allow_refresh` controla se o client pode chamar /oauth2/token quando
+        o access_token expirar:
+          - False (default): tasks paralelas usam — levantam erro em vez de
+            tentar refrescar (evita race no refresh_token de uso unico).
+          - True: a task `ensure_token_fresh` no inicio da DAG usa — eh a
+            UNICA que pode refrescar. Single subprocess, sem race.
         """
         if mock:
-            return cls(mock=True)
+            return cls(mock=True, allow_refresh=allow_refresh)
 
         # Import lazy: rodar tests fora do Airflow não pode quebrar.
         from airflow.sdk import Connection  # type: ignore[import-not-found]
@@ -178,6 +191,7 @@ class ContaAzulClient:
             access_token=extra.get("access_token"),
             access_token_expires_at=expires_at,
             conn_id=conn_id,
+            allow_refresh=allow_refresh,
         )
 
     # ────────────────── API pública ──────────────────
@@ -721,11 +735,17 @@ class ContaAzulClient:
     # ────────────────── OAuth2 ──────────────────
 
     def _ensure_access_token(self) -> str:
-        """Refresh do access_token se faltar ou estiver perto de expirar.
+        """Devolve o access_token atual; refresca se preciso E permitido.
 
         Margem de 60s pra evitar TOCTOU: token recém-renovado pode ainda
         estar válido na hora da request, mas expira no servidor antes da
-        resposta voltar — e aí 401 acontece. Renovação preventiva evita.
+        resposta voltar — e aí 401 acontece.
+
+        Quando `allow_refresh=False` (tasks paralelas de extract): levanta
+        erro em vez de refrescar — refresh deve ter rodado na task
+        `ensure_token_fresh` no inicio da DAG. Se o AT expirou no meio do
+        fan-out, eh sinal de DAG > TTL do AT (1h) ou Connection com tokens
+        invalidos — falhar loud eh melhor que entrar em race.
         """
         if self._access_token and self._access_token_expires_at:
             if self._access_token_expires_at > datetime.now(
@@ -733,9 +753,57 @@ class ContaAzulClient:
             ) + timedelta(seconds=60):
                 return self._access_token
 
+        if not self._allow_refresh:
+            raise ContaAzulAuthError(
+                "access_token expirou e este client foi construido com "
+                "allow_refresh=False. Possiveis causas: (1) DAG run durou "
+                f"mais que o TTL do AT (1h); (2) Connection {self._conn_id!r} "
+                "esta com tokens invalidos. Refresh so eh permitido na task "
+                "`ensure_token_fresh` no inicio da DAG."
+            )
+
         self._refresh_access_token()
         assert self._access_token  # acabou de ser setado
         return self._access_token
+
+    def ensure_token_fresh(self, min_remaining_minutes: int = 50) -> None:
+        """Refresca o access_token se faltar menos que `min_remaining_minutes`.
+
+        Idempotente. Designed pra ser chamado UMA UNICA VEZ no inicio da DAG
+        (task `ensure_token_fresh`), antes do fan-out paralelo das tasks de
+        extract. Garante que todas as tasks downstream pegam um AT valido
+        sem precisarem refrescar — eliminando race no refresh_token (de uso
+        unico) entre subprocesses paralelos.
+
+        Margem default de 50min pro AT (TTL 1h): se a DAG rodar em ate ~50min
+        apos esta task, AT continua valido pro fim. DAG mais longa precisa
+        rodar esta task de novo no meio (ou aumentar a margem).
+
+        Requer client construido com allow_refresh=True. Sem isso, levanta
+        erro porque _ensure_access_token bloqueia.
+        """
+        if self._mock:
+            return
+        if not self._allow_refresh:
+            raise ContaAzulAuthError(
+                "ensure_token_fresh requer allow_refresh=True. Use "
+                "ContaAzulClient.from_airflow_connection(conn_id, allow_refresh=True)."
+            )
+        if self._access_token and self._access_token_expires_at:
+            margin = timedelta(minutes=min_remaining_minutes)
+            now = datetime.now(timezone.utc)
+            if self._access_token_expires_at > now + margin:
+                remaining = self._access_token_expires_at - now
+                log.info(
+                    "Conta Azul: AT ainda valido por %ss — skip refresh proativo",
+                    int(remaining.total_seconds()),
+                )
+                return
+        log.info(
+            "Conta Azul: refresh proativo no inicio da DAG (margem=%dmin)",
+            min_remaining_minutes,
+        )
+        self._refresh_access_token()
 
     def _refresh_access_token(self) -> None:
         """POST oauth2/token com grant_type=refresh_token.
@@ -1027,9 +1095,19 @@ class ContaAzulClient:
                 time.sleep(wait)
                 continue
 
-            # 401: tentar 1x refresh + retry. Se acontece de novo, é problema
-            # real (refresh inválido) — quebra fluxo via _refresh_access_token.
+            # 401: tentar 1x refresh + retry, mas APENAS se o client tem
+            # permissao pra refrescar. Tasks paralelas de extract sao construidas
+            # com allow_refresh=False — pra elas, 401 falha loud (sinal de
+            # AT vencido durante o fan-out, deveria ter sido capturado pela
+            # task `ensure_token_fresh` no inicio da DAG).
             if resp.status_code == 401 and not already_refreshed_401:
+                if not self._allow_refresh:
+                    raise ContaAzulAuthError(
+                        f"{method} {path} retornou 401 e este client nao tem "
+                        "permissao pra refresh. Provavel causa: AT expirou no "
+                        "meio do DAG run. Refresh deve rodar na task "
+                        "`ensure_token_fresh` no inicio da DAG."
+                    )
                 log.info(
                     "Conta Azul %s %s: 401, tentando refresh do access_token",
                     method,

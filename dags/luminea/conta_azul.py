@@ -179,6 +179,27 @@ def luminea__conta_azul_etl():
     def open_sync_run(**context) -> None:
         sync_run_start(context, tenant_slug=TENANT_SLUG)
 
+    @task(retries=3, retry_exponential_backoff=True)
+    def ensure_token_fresh() -> None:
+        """Refresca proativamente o access_token do Conta Azul.
+
+        Conta Azul rotaciona o refresh_token a cada chamada (uso unico).
+        Se duas tasks paralelas tentassem refrescar simultaneamente, a
+        segunda receberia invalid_grant — race condition. Esta task
+        roda ANTES do fan-out paralelo, no unico subprocess que tem
+        permissao pra refrescar (allow_refresh=True). Todas as tasks de
+        extract herdam o AT fresco da Connection com allow_refresh=False
+        — nunca tentam refrescar, falham loud se AT vencer no meio.
+
+        Margem 50min: AT tem TTL 1h, entao apos refresh aqui sobra ~10min
+        de folga mesmo se a DAG inteira rodar. DAGs > 1h precisam de
+        ajuste (rodar essa task de novo, ou aumentar a margem).
+        """
+        client = ContaAzulClient.from_airflow_connection(
+            CONN_ID, mock=USE_MOCK, allow_refresh=True
+        )
+        client.ensure_token_fresh(min_remaining_minutes=50)
+
     @task(
         retries=3,
         retry_exponential_backoff=True,
@@ -206,8 +227,11 @@ def luminea__conta_azul_etl():
             log.info("[%s] TelemetryContext OK; building ContaAzulClient (mock=%s)", entity_name, USE_MOCK)
             # Le credenciais OAuth2 da Connection `luminea__conta_azul`.
             # CONTA_AZUL_MOCK=1 forca mock pra dev local sem creds.
+            # allow_refresh=False: tasks paralelas nao podem refrescar
+            # (refresh_token e' uso unico — race garantida com 2 paralelas).
+            # Refresh acontece APENAS na task ensure_token_fresh upstream.
             client = ContaAzulClient.from_airflow_connection(
-                CONN_ID, mock=USE_MOCK
+                CONN_ID, mock=USE_MOCK, allow_refresh=False
             )
             log.info("[%s] client built; opening DW connection", entity_name)
             with dw_connection() as conn:
@@ -259,6 +283,7 @@ def luminea__conta_azul_etl():
     )
 
     open_sync = open_sync_run()
+    token_fresh = ensure_token_fresh()
     extract = extract_entity_to_raw.expand(entity_name=ENTITIES)
     # Dependentes rodam APOS as primarias estarem em raw.
     extract_dependent = extract_entity_to_raw.override(
@@ -271,6 +296,7 @@ def luminea__conta_azul_etl():
     ).expand(entity_name=ENTITIES_TRANSITIVE)
     chain(
         open_sync,
+        token_fresh,
         extract,
         extract_dependent,
         extract_transitive,

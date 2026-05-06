@@ -53,25 +53,37 @@ models:
         data_tests: [not_null]
 
   - name: dim_conta_azul__produtos
-    description: "Dimensao de produtos com margem absoluta/percentual e flag abaixo_estoque_minimo."
+    description: "Dimensao de produtos. Enriquecida com produtos_detalhe (tributacao, dimensoes, fotos, NCM/CEST)."
     columns:
       - name: produto_id
         data_tests: [not_null, unique]
       - name: abaixo_estoque_minimo
         data_tests: [not_null]
+      - name: has_ncm
+        data_tests: [not_null]
+      - name: has_tributacao
+        data_tests: [not_null]
+      - name: has_fotos
+        data_tests: [not_null]
       - name: dim_refreshed_at
         data_tests: [not_null]
 
   - name: dim_conta_azul__servicos
-    description: "Dimensao de servicos com margem calculada."
+    description: "Dimensao de servicos. Enriquecida com servicos_detalhe (ISS, codigo municipal, tributacao detalhada)."
     columns:
       - name: servico_id
         data_tests: [not_null, unique]
+      - name: has_aliquota_iss
+        data_tests: [not_null]
+      - name: has_codigo_municipal
+        data_tests: [not_null]
+      - name: has_tributacao
+        data_tests: [not_null]
       - name: dim_refreshed_at
         data_tests: [not_null]
 
   - name: fct_conta_azul__vendas
-    description: "Fato de vendas (1 row por transacao). Flags is_aprovada/is_cancelada/is_esperando_aprovacao + has_cliente/has_vendedor."
+    description: "Fato de vendas (1 row por transacao). Enriquecido com vendas_detalhe (valor_liquido/frete/impostos, num_parcelas)."
     columns:
       - name: venda_id
         data_tests: [not_null, unique]
@@ -80,6 +92,9 @@ models:
       - name: is_cancelada
         data_tests: [not_null]
       - name: is_esperando_aprovacao
+        data_tests: [not_null]
+      - name: has_detalhe
+        description: "true quando vendas_detalhe ja foi puxado pra essa venda."
         data_tests: [not_null]
       - name: fct_refreshed_at
         data_tests: [not_null]
@@ -95,11 +110,16 @@ models:
         data_tests: [not_null]
 
   - name: dim_conta_azul__contratos
-    description: "Dimensao de contratos com flags is_ativo/is_vencido. Schema tentativo (Luminea retorna 0)."
+    description: "Dimensao de contratos. Enriquecida com contratos_detalhe (composicao_de_valor, recorrencia, termos)."
     columns:
       - name: contrato_id
         data_tests: [not_null, unique]
       - name: is_ativo
+        data_tests: [not_null]
+      - name: has_detalhe
+        description: "true quando contratos_detalhe ja foi puxado."
+        data_tests: [not_null]
+      - name: is_recorrente
         data_tests: [not_null]
       - name: dim_refreshed_at
         data_tests: [not_null]
@@ -243,4 +263,87 @@ models:
       - name: has_email
         data_tests: [not_null]
       - name: dim_refreshed_at
+        data_tests: [not_null]
+
+  # ─── Granularidade fina (parcelas, baixas, cobrancas) ───
+  - name: fct_conta_azul__parcelas
+    description: "Fato de parcelas de eventos financeiros. 1 row por parcela. Flags is_paga/is_aberta/is_atrasada e dias_atraso_pagamento."
+    columns:
+      - name: parcela_id
+        data_tests: [not_null, unique]
+      - name: is_paga
+        data_tests: [not_null]
+      - name: is_aberta
+        data_tests: [not_null]
+      - name: is_atrasada
+        data_tests: [not_null]
+      - name: fct_refreshed_at
+        data_tests: [not_null]
+
+  - name: fct_conta_azul__baixas
+    description: "Fato de pagamentos efetivos (baixas). 1 parcela pode ter N baixas. Verdade pra DRE de caixa."
+    columns:
+      - name: baixa_id
+        data_tests: [not_null, unique]
+      - name: tem_juros
+        data_tests: [not_null]
+      - name: tem_multa
+        data_tests: [not_null]
+      - name: fct_refreshed_at
+        data_tests: [not_null]
+
+  - name: fct_conta_azul__cobrancas
+    description: "Fato de cobrancas (boletos/PIX). Funil registrado -> quitado | expirado | cancelado."
+    columns:
+      - name: cobranca_id
+        data_tests: [not_null, unique]
+      - name: is_quitada
+        data_tests: [not_null]
+      - name: is_registrada
+        data_tests: [not_null]
+      - name: fct_refreshed_at
+        data_tests: [not_null]
+
+  # ─── CDC + saldo snapshot ───
+  - name: fct_conta_azul__eventos_alteracoes
+    description: "Log auxiliar CDC — IDs de eventos financeiros alterados. Auxilia detectar mudancas fora da janela 5 anos."
+    columns:
+      - name: evento_id
+        data_tests: [not_null, unique]
+      - name: fct_refreshed_at
+        data_tests: [not_null]
+
+  - name: fct_conta_azul__saldo_atual
+    description: "Snapshot diario de saldo por conta financeira. Granularidade conta x snapshot_date."
+    columns:
+      - name: saldo_atual_id
+        data_tests: [not_null, unique]
+      - name: is_negativo
+        data_tests: [not_null]
+      - name: is_zerado
+        data_tests: [not_null]
+      - name: fct_refreshed_at
+        data_tests: [not_null]
+
+  # ─── Granularidade comercial (linhas de venda/NF) ───
+  - name: fct_conta_azul__vendas_itens
+    description: "Fato de itens de venda. 1 row = 1 SKU vendido. FK venda_id -> fct_vendas."
+    columns:
+      - name: venda_item_id
+        data_tests: [not_null, unique]
+      - name: is_produto
+        data_tests: [not_null]
+      - name: is_servico
+        data_tests: [not_null]
+      - name: fct_refreshed_at
+        data_tests: [not_null]
+
+  - name: fct_conta_azul__notas_fiscais_itens
+    description: "Fato de itens de NFe com tributos por linha (ICMS/IPI/PIS/COFINS)."
+    columns:
+      - name: nota_item_id
+        data_tests: [not_null, unique]
+      - name: has_produto
+        data_tests: [not_null]
+      - name: fct_refreshed_at
         data_tests: [not_null]
