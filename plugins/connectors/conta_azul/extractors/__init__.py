@@ -17,6 +17,7 @@ Convencao do nome: pt-BR + plural, espelhando o endpoint da API
 `/centro-de-custo` -> "centros_de_custo" — pluralizamos no raw).
 """
 from connectors.conta_azul.extractors.base import Extractor
+from connectors.conta_azul.extractors.baixas import BaixasExtractor
 from connectors.conta_azul.extractors.categorias_dre import (
     CategoriasDreExtractor,
 )
@@ -26,6 +27,7 @@ from connectors.conta_azul.extractors.categorias_financeiras import (
 from connectors.conta_azul.extractors.centros_de_custo import (
     CentrosDeCustoExtractor,
 )
+from connectors.conta_azul.extractors.cobrancas import CobrancasExtractor
 from connectors.conta_azul.extractors.conta_conectada import (
     ContaConectadaExtractor,
 )
@@ -39,11 +41,23 @@ from connectors.conta_azul.extractors.contas_financeiras import (
     ContasFinanceirasExtractor,
 )
 from connectors.conta_azul.extractors.contratos import ContratosExtractor
+from connectors.conta_azul.extractors.contratos_detalhe import (
+    ContratosDetalheExtractor,
+)
+from connectors.conta_azul.extractors.eventos_alteracoes import (
+    EventosAlteracoesExtractor,
+)
 from connectors.conta_azul.extractors.notas_fiscais import (
     NotasFiscaisExtractor,
 )
+from connectors.conta_azul.extractors.notas_fiscais_itens import (
+    NotasFiscaisItensExtractor,
+)
 from connectors.conta_azul.extractors.notas_servico import (
     NotasServicoExtractor,
+)
+from connectors.conta_azul.extractors.parcelas_detalhe import (
+    ParcelasDetalheExtractor,
 )
 from connectors.conta_azul.extractors.pessoas import PessoasExtractor
 from connectors.conta_azul.extractors.pessoas_detalhe import (
@@ -65,14 +79,29 @@ from connectors.conta_azul.extractors.produto_unidades_medida import (
     ProdutoUnidadesMedidaExtractor,
 )
 from connectors.conta_azul.extractors.produtos import ProdutosExtractor
+from connectors.conta_azul.extractors.produtos_detalhe import (
+    ProdutosDetalheExtractor,
+)
+from connectors.conta_azul.extractors.saldo_atual import (
+    SaldoAtualExtractor,
+)
 from connectors.conta_azul.extractors.saldo_inicial import (
     SaldoInicialExtractor,
 )
 from connectors.conta_azul.extractors.servicos import ServicosExtractor
+from connectors.conta_azul.extractors.servicos_detalhe import (
+    ServicosDetalheExtractor,
+)
 from connectors.conta_azul.extractors.transferencias import (
     TransferenciasExtractor,
 )
 from connectors.conta_azul.extractors.vendas import VendasExtractor
+from connectors.conta_azul.extractors.vendas_detalhe import (
+    VendasDetalheExtractor,
+)
+from connectors.conta_azul.extractors.vendas_itens import (
+    VendasItensExtractor,
+)
 from connectors.conta_azul.extractors.vendedores import VendedoresExtractor
 
 
@@ -83,12 +112,14 @@ EXTRACTORS: dict[str, type[Extractor]] = {
     ContaConectadaExtractor.NAME: ContaConectadaExtractor,
     # Catalogo
     ProdutosExtractor.NAME: ProdutosExtractor,
+    ProdutosDetalheExtractor.NAME: ProdutosDetalheExtractor,
     ProdutoCategoriasExtractor.NAME: ProdutoCategoriasExtractor,
     ProdutoNcmExtractor.NAME: ProdutoNcmExtractor,
     ProdutoCestExtractor.NAME: ProdutoCestExtractor,
     ProdutoUnidadesMedidaExtractor.NAME: ProdutoUnidadesMedidaExtractor,
     ProdutoEcommerceMarcasExtractor.NAME: ProdutoEcommerceMarcasExtractor,
     ServicosExtractor.NAME: ServicosExtractor,
+    ServicosDetalheExtractor.NAME: ServicosDetalheExtractor,
     # Financeiro — master data
     CategoriasFinanceirasExtractor.NAME: CategoriasFinanceirasExtractor,
     CategoriasDreExtractor.NAME: CategoriasDreExtractor,
@@ -99,12 +130,22 @@ EXTRACTORS: dict[str, type[Extractor]] = {
     ContasPagarExtractor.NAME: ContasPagarExtractor,
     TransferenciasExtractor.NAME: TransferenciasExtractor,
     SaldoInicialExtractor.NAME: SaldoInicialExtractor,
+    SaldoAtualExtractor.NAME: SaldoAtualExtractor,
+    EventosAlteracoesExtractor.NAME: EventosAlteracoesExtractor,
+    # Financeiro — granularidade fina (N+1 a partir de eventos)
+    ParcelasDetalheExtractor.NAME: ParcelasDetalheExtractor,
+    BaixasExtractor.NAME: BaixasExtractor,
+    CobrancasExtractor.NAME: CobrancasExtractor,
     # Comercial
     VendedoresExtractor.NAME: VendedoresExtractor,
     VendasExtractor.NAME: VendasExtractor,
+    VendasDetalheExtractor.NAME: VendasDetalheExtractor,
+    VendasItensExtractor.NAME: VendasItensExtractor,
     ContratosExtractor.NAME: ContratosExtractor,
+    ContratosDetalheExtractor.NAME: ContratosDetalheExtractor,
     # Fiscal
     NotasFiscaisExtractor.NAME: NotasFiscaisExtractor,
+    NotasFiscaisItensExtractor.NAME: NotasFiscaisItensExtractor,
     NotasServicoExtractor.NAME: NotasServicoExtractor,
 }
 
@@ -116,12 +157,14 @@ __all__ = [
     "PessoasDetalheExtractor",
     "ContaConectadaExtractor",
     "ProdutosExtractor",
+    "ProdutosDetalheExtractor",
     "ProdutoCategoriasExtractor",
     "ProdutoNcmExtractor",
     "ProdutoCestExtractor",
     "ProdutoUnidadesMedidaExtractor",
     "ProdutoEcommerceMarcasExtractor",
     "ServicosExtractor",
+    "ServicosDetalheExtractor",
     "CategoriasFinanceirasExtractor",
     "CategoriasDreExtractor",
     "CentrosDeCustoExtractor",
@@ -130,9 +173,18 @@ __all__ = [
     "ContasPagarExtractor",
     "TransferenciasExtractor",
     "SaldoInicialExtractor",
+    "SaldoAtualExtractor",
+    "EventosAlteracoesExtractor",
+    "ParcelasDetalheExtractor",
+    "BaixasExtractor",
+    "CobrancasExtractor",
     "VendedoresExtractor",
     "VendasExtractor",
+    "VendasDetalheExtractor",
+    "VendasItensExtractor",
     "ContratosExtractor",
+    "ContratosDetalheExtractor",
     "NotasFiscaisExtractor",
+    "NotasFiscaisItensExtractor",
     "NotasServicoExtractor",
 ]

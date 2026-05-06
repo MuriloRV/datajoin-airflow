@@ -91,6 +91,7 @@ ENTITIES: list[str] = [
     "contas_a_pagar",                       # incremental + window
     "transferencias",                       # window 5a
     "saldo_inicial",                        # window 1a
+    "eventos_alteracoes",                   # CDC (incremental)
     # Comercial
     "vendedores",
     "vendas",                               # incremental
@@ -101,10 +102,36 @@ ENTITIES: list[str] = [
 ]
 
 # Entities que dependem de raw populado de outras entities — rodam DEPOIS.
-# pessoas_detalhe le IDs de raw.conta_azul__pessoas e busca /pessoas/{id}
-# com N+1, entao precisa que pessoas extract ja tenha rodado.
+# Le IDs de raw.<source> e faz N+1 nos endpoints de detalhe.
+# Inclui:
+#   - pessoas_detalhe       <- pessoas
+#   - parcelas_detalhe      <- contas_a_receber + contas_a_pagar
+#   - vendas_detalhe        <- vendas
+#   - vendas_itens          <- vendas
+#   - notas_fiscais_itens   <- notas_fiscais (chave_acesso)
+#   - contratos_detalhe     <- contratos
+#   - produtos_detalhe      <- produtos
+#   - servicos_detalhe      <- servicos
+#   - saldo_atual           <- contas_financeiras (snapshot diario)
 ENTITIES_DEPENDENT: list[str] = [
     "pessoas_detalhe",
+    "parcelas_detalhe",
+    "vendas_detalhe",
+    "vendas_itens",
+    "notas_fiscais_itens",
+    "contratos_detalhe",
+    "produtos_detalhe",
+    "servicos_detalhe",
+    "saldo_atual",
+]
+
+# Entities que dependem das DEPENDENTES (cadeia de 2 niveis de N+1).
+# Inclui:
+#   - baixas        <- parcelas_detalhe (parcela_id -> /parcelas/{id}/baixas)
+#   - cobrancas     <- parcelas_detalhe + contas_a_receber (scan de cobranca_ids no jsonb)
+ENTITIES_TRANSITIVE: list[str] = [
+    "baixas",
+    "cobrancas",
 ]
 
 # Cosmos lê o profiles.yml do proprio projeto dbt — preserva o macro
@@ -152,6 +179,27 @@ def luminea__conta_azul_etl():
     def open_sync_run(**context) -> None:
         sync_run_start(context, tenant_slug=TENANT_SLUG)
 
+    @task(retries=3, retry_exponential_backoff=True)
+    def ensure_token_fresh() -> None:
+        """Refresca proativamente o access_token do Conta Azul.
+
+        Conta Azul rotaciona o refresh_token a cada chamada (uso unico).
+        Se duas tasks paralelas tentassem refrescar simultaneamente, a
+        segunda receberia invalid_grant — race condition. Esta task
+        roda ANTES do fan-out paralelo, no unico subprocess que tem
+        permissao pra refrescar (allow_refresh=True). Todas as tasks de
+        extract herdam o AT fresco da Connection com allow_refresh=False
+        — nunca tentam refrescar, falham loud se AT vencer no meio.
+
+        Margem 50min: AT tem TTL 1h, entao apos refresh aqui sobra ~10min
+        de folga mesmo se a DAG inteira rodar. DAGs > 1h precisam de
+        ajuste (rodar essa task de novo, ou aumentar a margem).
+        """
+        client = ContaAzulClient.from_airflow_connection(
+            CONN_ID, mock=USE_MOCK, allow_refresh=True
+        )
+        client.ensure_token_fresh(min_remaining_minutes=50)
+
     @task(
         retries=3,
         retry_exponential_backoff=True,
@@ -179,8 +227,11 @@ def luminea__conta_azul_etl():
             log.info("[%s] TelemetryContext OK; building ContaAzulClient (mock=%s)", entity_name, USE_MOCK)
             # Le credenciais OAuth2 da Connection `luminea__conta_azul`.
             # CONTA_AZUL_MOCK=1 forca mock pra dev local sem creds.
+            # allow_refresh=False: tasks paralelas nao podem refrescar
+            # (refresh_token e' uso unico — race garantida com 2 paralelas).
+            # Refresh acontece APENAS na task ensure_token_fresh upstream.
             client = ContaAzulClient.from_airflow_connection(
-                CONN_ID, mock=USE_MOCK
+                CONN_ID, mock=USE_MOCK, allow_refresh=False
             )
             log.info("[%s] client built; opening DW connection", entity_name)
             with dw_connection() as conn:
@@ -232,12 +283,26 @@ def luminea__conta_azul_etl():
     )
 
     open_sync = open_sync_run()
+    token_fresh = ensure_token_fresh()
     extract = extract_entity_to_raw.expand(entity_name=ENTITIES)
     # Dependentes rodam APOS as primarias estarem em raw.
     extract_dependent = extract_entity_to_raw.override(
         task_id="extract_dependent_to_raw",
     ).expand(entity_name=ENTITIES_DEPENDENT)
-    chain(open_sync, extract, extract_dependent, dbt_staging_curated, dbt_delivery)
+    # Transitivas rodam APOS as dependentes (cadeia de 2 niveis de N+1):
+    # ex: baixas le parcela_ids de raw.parcelas_detalhe.
+    extract_transitive = extract_entity_to_raw.override(
+        task_id="extract_transitive_to_raw",
+    ).expand(entity_name=ENTITIES_TRANSITIVE)
+    chain(
+        open_sync,
+        token_fresh,
+        extract,
+        extract_dependent,
+        extract_transitive,
+        dbt_staging_curated,
+        dbt_delivery,
+    )
 
 
 luminea__conta_azul_etl()

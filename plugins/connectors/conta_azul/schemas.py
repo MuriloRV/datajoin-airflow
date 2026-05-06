@@ -650,6 +650,353 @@ class ContaConectada(BaseModel):
     )(_empty_str_to_none)
 
 
+class ContratoDetalhe(BaseModel):
+    """Detalhe completo de contrato. Endpoint: /v1/contratos/{id}.
+
+    Complementa o agregado da listagem com:
+      - composicao_de_valor (bruto, desconto, frete, liquido)
+      - condicao_pagamento (tipo, conta, vencimento)
+      - configuracao de recorrencia (frequencia, data inicio/fim, ocorrencias)
+      - termos
+      - vendedor
+
+    Schema tentativo. Luminea retorna 0 contratos hoje, sem sample real.
+    """
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    id: UUID
+    numero: str | None = None
+    descricao: str | None = None
+    cliente: dict | None = None
+    vendedor: dict | None = None
+    composicao_de_valor: dict | None = None
+    condicao_pagamento: dict | None = None
+    configuracao_recorrencia: dict | None = None
+    termos: dict | None = None
+    data_emissao: datetime | None = None
+    data_inicio: datetime | None = None
+    data_fim: datetime | None = None
+    status: str | None = None
+    valor_bruto: float | None = None
+    valor_liquido: float | None = None
+    data_criacao: datetime | None = None
+    data_alteracao: datetime | None = None
+
+    _empty_to_none = field_validator(
+        "numero", "descricao", "status", mode="before"
+    )(_empty_str_to_none)
+
+
+class ProdutoDetalhe(BaseModel):
+    """Detalhe completo de produto. Endpoint: /v1/produtos/{id}.
+
+    Complementa o agregado da listagem com:
+      - tributacao (ICMS, IPI, PIS, COFINS)
+      - dimensoes (peso, altura, largura, comprimento)
+      - fotos
+      - NCM e CEST detalhados
+      - estoque por deposito (se aplicavel)
+    """
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    id: UUID
+    nome: str | None = None
+    codigo: str | None = None
+    descricao: str | None = None
+    preco: float | None = None
+    custo: float | None = None
+    estoque: float | None = None
+    estoque_minimo: float | None = None
+    ncm: str | None = None
+    cest: str | None = None
+    unidade: str | None = None
+    peso: float | None = None
+    altura: float | None = None
+    largura: float | None = None
+    comprimento: float | None = None
+    tributacao: dict | None = None
+    fotos: list[dict] | None = None
+    status: str | None = None
+    data_criacao: datetime | None = None
+    data_alteracao: datetime | None = None
+
+    _empty_to_none = field_validator(
+        "nome", "codigo", "descricao", "ncm", "cest", "unidade", mode="before"
+    )(_empty_str_to_none)
+
+
+class ServicoDetalhe(BaseModel):
+    """Detalhe completo de servico. Endpoint: /v1/servicos/{id}.
+
+    Complementa o agregado da listagem com:
+      - tributacao (ISS, PIS, COFINS)
+      - codigo de servico municipal
+      - observacoes fiscais
+    """
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    id: UUID
+    nome: str | None = None
+    codigo: str | None = None
+    descricao: str | None = None
+    preco: float | None = None
+    custo: float | None = None
+    aliquota_iss: float | None = None
+    codigo_servico_municipal: str | None = None
+    tributacao: dict | None = None
+    observacao: str | None = None
+    status: str | None = None
+    tipo_servico: str | None = None  # 'PRESTADO' | 'TOMADO'
+    data_criacao: datetime | None = None
+    data_alteracao: datetime | None = None
+
+    _empty_to_none = field_validator(
+        "nome", "codigo", "descricao", "codigo_servico_municipal",
+        "observacao", mode="before",
+    )(_empty_str_to_none)
+
+
+class EventoAlteracao(BaseModel):
+    """ID de evento financeiro alterado num periodo. Endpoint:
+    /v1/financeiro/eventos-financeiros/alteracoes.
+
+    CDC oficial — devolve apenas IDs (sem detalhe). Usado pra detectar
+    eventos cujo data_alteracao mudou sem precisar varrer toda a janela
+    de data_vencimento de 5 anos. Util tambem pra eventos cuja
+    data_vencimento esta FORA da janela, mas o status mudou recentemente.
+
+    Schema tentativo — endpoint pode retornar id solto ou {id, data_alteracao}.
+    """
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    id: UUID
+    data_alteracao: datetime | None = None
+    tipo_evento: str | None = None  # 'CONTAS_RECEBER' | 'CONTAS_PAGAR' (se a API expoe)
+
+
+class SaldoAtual(BaseModel):
+    """Snapshot de saldo atual de uma conta financeira. Endpoint:
+    /v1/conta-financeira/{id}/saldo-atual.
+
+    Granularidade: 1 row = 1 conta + 1 momento de captura (snapshot diario
+    via run da DAG). PK composta sintetica: hash(conta_id, snapshot_date)
+    pra UPSERT idempotente dentro do mesmo dia.
+
+    Sem watermark — full snapshot a cada run. Apenas atualiza o saldo do dia.
+    """
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    id: UUID | None = None  # synthetic — gerado em serialize
+    conta_financeira_id: UUID | None = None
+    saldo_atual: float | None = None
+    saldo: float | None = None  # alias defensivo se a API responder s/saldo_atual
+    data_snapshot: datetime | None = None  # preenchido no extractor (utc now)
+
+
+class Cobranca(BaseModel):
+    """Cobranca (boleto/PIX) emitida pra uma parcela de contas a receber.
+    Endpoint: /v1/financeiro/eventos-financeiros/contas-a-receber/cobranca/{id_cobranca}.
+
+    Status possiveis: AGUARDANDO_CONFIRMACAO, REGISTRADO, QUITADO, CANCELADO,
+    INVALIDO, EXPIRADO. Importante pra rastreio do funil de cobranca
+    (gerada -> registrada -> paga ou expirada).
+
+    Schema tentativo. extra='allow' + raw jsonb capturam o resto.
+    """
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    id: UUID
+    parcela_id: UUID | None = None
+    evento_financeiro_id: UUID | None = None
+    status: str | None = None
+    url: str | None = None  # link da cobranca (boleto / PIX)
+    valor: float | None = None
+    data_vencimento: datetime | None = None
+    data_emissao: datetime | None = None
+    data_alteracao: datetime | None = None
+    tipo: str | None = None  # 'BOLETO' | 'PIX' | ...
+
+    _empty_to_none = field_validator(
+        "status", "url", "tipo", mode="before"
+    )(_empty_str_to_none)
+
+
+class VendaItem(BaseModel):
+    """Item de uma venda (linha de pedido). Endpoint: /v1/vendas/{id}/itens.
+
+    Granularidade: 1 row = 1 linha de produto/servico vendido.
+
+    Schema tentativo. Doc lista: produto/servico, quantidade, valor unitario,
+    desconto, valor total do item, CFOP. extra='allow' captura o resto.
+    """
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    id: UUID
+    venda_id: UUID | None = None  # FK -> vendas.id
+    produto_id: UUID | None = None
+    servico_id: UUID | None = None
+    descricao: str | None = None
+    codigo: str | None = None
+    quantidade: float | None = None
+    valor_unitario: float | None = None
+    desconto: float | None = None
+    valor_total: float | None = None
+    cfop: str | None = None
+    ncm: str | None = None
+    unidade: str | None = None
+
+    _empty_to_none = field_validator(
+        "descricao", "codigo", "cfop", "ncm", "unidade", mode="before"
+    )(_empty_str_to_none)
+
+
+class VendaDetalhe(BaseModel):
+    """Detalhe completo de venda. Endpoint: /v1/vendas/{id}.
+
+    Complementa o agregado de /venda/busca com: condicao_pagamento,
+    parcelas, endereco_entrega, observacoes, impostos totais, frete,
+    desconto consolidado, natureza_operacao.
+
+    Granularidade: 1 row = 1 venda (mesmo PK que vendas).
+    """
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    id: UUID
+    numero: int | None = None
+    situacao: str | None = None
+    data_emissao: datetime | None = None
+    data_alteracao: datetime | None = None
+    valor_bruto: float | None = None
+    valor_desconto: float | None = None
+    valor_frete: float | None = None
+    valor_impostos: float | None = None
+    valor_liquido: float | None = None
+    observacoes: str | None = None
+    cliente: dict | None = None
+    vendedor: dict | None = None
+    natureza_operacao: dict | None = None
+    condicao_pagamento: dict | None = None
+    parcelas: list[dict] | None = None
+    endereco_entrega: dict | None = None
+
+    _empty_to_none = field_validator(
+        "situacao", "observacoes", mode="before"
+    )(_empty_str_to_none)
+
+
+class NotaFiscalItem(BaseModel):
+    """Item de uma NFe (linha de produto na nota). Endpoint: /v1/notas-fiscais/{chave}.
+
+    Endpoint nao expoe lista de itens isolada — vem aninhada dentro do
+    detalhe da nota. Extractor desempacota o array `itens` e gera 1 row
+    por linha. PK = (nf_id, numero_item) gerado deterministicamente
+    quando o item nao tem `id` proprio.
+    """
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    id: str  # pode ser UUID da API ou hash deterministico (chave_acesso + numero_item)
+    nota_fiscal_id: UUID | None = None
+    chave_acesso: str | None = None
+    numero_item: int | None = None
+    produto_id: UUID | None = None
+    codigo: str | None = None
+    descricao: str | None = None
+    ncm: str | None = None
+    cfop: str | None = None
+    quantidade: float | None = None
+    valor_unitario: float | None = None
+    valor_total: float | None = None
+    valor_icms: float | None = None
+    valor_ipi: float | None = None
+    valor_pis: float | None = None
+    valor_cofins: float | None = None
+
+    _empty_to_none = field_validator(
+        "codigo", "descricao", "ncm", "cfop", "chave_acesso", mode="before"
+    )(_empty_str_to_none)
+
+
+class ParcelaDetalhe(BaseModel):
+    """Detalhe completo de parcela. Endpoint: /v1/financeiro/eventos-financeiros/parcelas/{id}.
+
+    E' aqui que mora `data_pagamento`, juros, multa, valor liquido, forma
+    de pagamento e conta financeira — campos AUSENTES no /buscar agregado
+    de contas_a_receber/pagar.
+
+    Schema tentativo — campos baseados na descricao da doc oficial. Sem
+    sample real ainda em Luminea (precisa rodar). extra='allow' + raw jsonb
+    capturam o resto.
+
+    Granularidade: 1 row = 1 parcela.
+    """
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    id: UUID
+    evento_financeiro_id: UUID | None = None  # FK -> contas_a_receber/pagar
+    numero_parcela: int | None = None
+    valor: float | None = None
+    valor_bruto: float | None = None
+    valor_liquido: float | None = None
+    desconto: float | None = None
+    juros: float | None = None
+    multa: float | None = None
+    data_vencimento: datetime | None = None
+    data_pagamento: datetime | None = None  # PRINCIPAL — antes inexistente em raw
+    status: str | None = None
+    forma_pagamento: str | None = None
+    conta_financeira_id: UUID | None = None
+    conta_financeira: dict | None = None
+    data_criacao: datetime | None = None
+    data_alteracao: datetime | None = None
+
+    _empty_to_none = field_validator(
+        "status", "forma_pagamento", mode="before"
+    )(_empty_str_to_none)
+
+
+class Baixa(BaseModel):
+    """Baixa (pagamento efetivo) de parcela. Endpoint: /v1/financeiro/eventos-financeiros/parcelas/{id}/baixas.
+
+    1 parcela pode ter N baixas (parciais). Aqui mora a verdade absoluta
+    sobre o que foi pago, quando, como e com qual juros/multa/desconto
+    aplicado naquele momento — relevante pra DRE de caixa, prazo medio
+    de recebimento, recuperacao de multas.
+
+    Schema tentativo, baseado na descricao da doc oficial.
+    """
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    id: UUID
+    parcela_id: UUID | None = None  # FK -> parcelas_detalhe
+    data_pagamento: datetime | None = None
+    valor: float | None = None
+    juros: float | None = None
+    multa: float | None = None
+    desconto: float | None = None
+    metodo_pagamento: str | None = None
+    forma_pagamento: str | None = None
+    conta_financeira_id: UUID | None = None
+    conta_financeira: dict | None = None
+    observacao: str | None = None
+    data_criacao: datetime | None = None
+    data_alteracao: datetime | None = None
+
+    _empty_to_none = field_validator(
+        "metodo_pagamento", "forma_pagamento", "observacao", mode="before"
+    )(_empty_str_to_none)
+
+
 class PessoaDetalhe(BaseModel):
     """Detalhe completo de pessoa. Diferente do schema Pessoa (list) — tem nested.
 

@@ -36,3 +36,4 @@ dbt/projects/*/logs/
 # Secrets — credenciais OAuth de tenants nunca commitadas
 contaazul_*_extra.json
 *_refresh_token.json
+.env.temp
