@@ -46,9 +46,9 @@ from platform_telemetry import (
     TelemetryContext,
     dbt_model_callback,
     dw_connection,
+    pipeline_run_finalize,
+    pipeline_run_start,
     resolve_tenant_by_slug,
-    sync_run_finalize,
-    sync_run_start,
 )
 
 # ─────────────── Configs do tenant ───────────────
@@ -143,19 +143,22 @@ PROFILE_CONFIG = ProfileConfig(
     profiles_yml_filepath=f"{DBT_PROJECT_DIR}/profiles.yml",
 )
 
-# Callback que reporta 1 JobRun por model dbt no DB datajoin. Tolerante
+# Callback que reporta 1 PipelineTask por model dbt no DB datajoin. Tolerante
 # a falhas (try/except interno + log warning) — telemetria nao derruba
 # a DAG. Anexado em both success e failure pra capturar models que
-# quebraram tambem.
-_DBT_MODEL_CB = partial(dbt_model_callback, tenant_slug=TENANT_SLUG)
-
-# Callbacks DAG-level pra publicar SyncRun (rollup). Tolerante a falhas
-# internamente — telemetria nunca derruba a DAG.
-_SYNC_FINALIZE_SUCCESS = partial(
-    sync_run_finalize, tenant_slug=TENANT_SLUG, status="success"
+# quebraram tambem. project_dir e' usado pra ler rows_affected do
+# target/run_results.json.
+_DBT_MODEL_CB = partial(
+    dbt_model_callback, tenant_slug=TENANT_SLUG, project_dir=DBT_PROJECT_DIR
 )
-_SYNC_FINALIZE_FAILED = partial(
-    sync_run_finalize, tenant_slug=TENANT_SLUG, status="failed"
+
+# Callbacks DAG-level pra publicar PipelineRun (rollup). Tolerante a falhas
+# internamente — telemetria nunca derruba a DAG.
+_PIPELINE_FINALIZE_SUCCESS = partial(
+    pipeline_run_finalize, tenant_slug=TENANT_SLUG, status="success"
+)
+_PIPELINE_FINALIZE_FAILED = partial(
+    pipeline_run_finalize, tenant_slug=TENANT_SLUG, status="failed"
 )
 
 
@@ -169,15 +172,15 @@ _SYNC_FINALIZE_FAILED = partial(
     max_active_runs=1,
     tags=["tenant:luminea", "kind:etl", "source:conta_azul"],
     doc_md=__doc__,
-    on_success_callback=_SYNC_FINALIZE_SUCCESS,
-    on_failure_callback=_SYNC_FINALIZE_FAILED,
+    on_success_callback=_PIPELINE_FINALIZE_SUCCESS,
+    on_failure_callback=_PIPELINE_FINALIZE_FAILED,
 )
 def luminea__conta_azul_etl():
-    # Primeira task: cria a SyncRun pai. Airflow 3.x nao tem hook estavel
+    # Primeira task: cria a PipelineRun pai. Airflow 3.x nao tem hook estavel
     # de "DAG comecou" — fazer via task de abertura e' a forma robusta.
     @task(retries=2)
-    def open_sync_run(**context) -> None:
-        sync_run_start(context, tenant_slug=TENANT_SLUG)
+    def open_pipeline_run(**context) -> None:
+        pipeline_run_start(context, tenant_slug=TENANT_SLUG)
 
     @task(retries=3, retry_exponential_backoff=True)
     def ensure_token_fresh() -> None:
@@ -222,7 +225,7 @@ def luminea__conta_azul_etl():
         tenant = resolve_tenant_by_slug(TENANT_SLUG)
         log.info("[%s] tenant resolved: id=%s", entity_name, tenant["id"])
 
-        log.info("[%s] entering TelemetryContext (POST /job-runs status=running)", entity_name)
+        log.info("[%s] entering TelemetryContext (POST /pipeline-tasks/upsert status=running)", entity_name)
         with TelemetryContext.from_airflow(context, tenant_id=tenant["id"]) as tele:
             log.info("[%s] TelemetryContext OK; building ContaAzulClient (mock=%s)", entity_name, USE_MOCK)
             # Le credenciais OAuth2 da Connection `luminea__conta_azul`.
@@ -282,7 +285,7 @@ def luminea__conta_azul_etl():
         },
     )
 
-    open_sync = open_sync_run()
+    open_pipeline = open_pipeline_run()
     token_fresh = ensure_token_fresh()
     extract = extract_entity_to_raw.expand(entity_name=ENTITIES)
     # Dependentes rodam APOS as primarias estarem em raw.
@@ -295,7 +298,7 @@ def luminea__conta_azul_etl():
         task_id="extract_transitive_to_raw",
     ).expand(entity_name=ENTITIES_TRANSITIVE)
     chain(
-        open_sync,
+        open_pipeline,
         token_fresh,
         extract,
         extract_dependent,

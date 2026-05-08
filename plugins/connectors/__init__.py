@@ -6,7 +6,7 @@ diferentes (decisao deliberada — atualizar a lib do Conta Azul nao
 pode quebrar a DAG da Vindi).
 
 Cross-cutting concerns que SAO compartilhados:
-- platform_telemetry (callbacks de job_run pro API Core)
+- platform_telemetry (callbacks de pipeline_run/pipeline_task pro API Core)
 - DW connection (env vars)
 
 Cada conector segue o layout:

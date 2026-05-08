@@ -1,8 +1,18 @@
-"""Cliente HTTP para a API Core da plataforma."""
+"""Cliente HTTP para a API Core da plataforma.
+
+Endpoints consumidos pelo Airflow (mig 0036):
+- POST /tenants/{id}/pipeline-runs/start       (callback on_dag_run_start)
+- POST /tenants/{id}/pipeline-runs/finalize    (callback on_dag_run_success/failure)
+- POST /tenants/{id}/pipeline-tasks/upsert     (callback por task)
+- GET/PUT /admin/etl-watermarks/{slug}/{source}/{entity}
+
+Auth: Authorization: Bearer <PLATFORM_API_TOKEN>. O token estatico mapeia
+no backend pra SERVICE_USER (role platform_operator) — aceito pelos
+endpoints com require_staff.
+"""
 from __future__ import annotations
 
 import os
-from decimal import Decimal
 from typing import Any
 
 import httpx
@@ -20,33 +30,36 @@ class PlatformClient:
             timeout=10.0,
         )
 
-    def upsert_job_run(self, tenant_id: str, payload: dict[str, Any]) -> dict:
-        r = self._client.post(f"/tenants/{tenant_id}/job-runs", json=payload)
+    # ─── PipelineTask (mig 0036) ─────────────────────────────────
+    # 1 callback por task do Airflow. Idempotente por
+    # (tenant_id, source, external_run_id, task_id). Liga ao
+    # PipelineRun pai via (dag_id, dag_run_id) — retro-link automatico
+    # quando o start callback chega depois.
+
+    def upsert_pipeline_task(self, tenant_id: str, payload: dict[str, Any]) -> dict:
+        r = self._client.post(
+            f"/tenants/{tenant_id}/pipeline-tasks/upsert", json=payload
+        )
         r.raise_for_status()
         return r.json()
 
-    # ─── SyncRun (mig 0030) ─────────────────────────────────
-    # Rollup de DAG run. Callbacks de DAG-level (on_dag_run_start/success/failure)
-    # publicam aqui; backend recomputa rollup a partir das job_runs filhas.
+    # ─── PipelineRun (mig 0036) ─────────────────────────────────
+    # Rollup de DAG run. Callbacks de DAG-level publicam aqui;
+    # backend recomputa rollup a partir das pipeline_tasks filhas.
 
-    def start_sync_run(self, tenant_id: str, payload: dict[str, Any]) -> dict:
+    def start_pipeline_run(self, tenant_id: str, payload: dict[str, Any]) -> dict:
         """Callback on_dag_run_start. Idempotente — retry da DAG nao quebra."""
         r = self._client.post(
-            f"/tenants/{tenant_id}/sync-runs/start", json=payload
+            f"/tenants/{tenant_id}/pipeline-runs/start", json=payload
         )
         r.raise_for_status()
         return r.json()
 
-    def finalize_sync_run(self, tenant_id: str, payload: dict[str, Any]) -> dict:
+    def finalize_pipeline_run(self, tenant_id: str, payload: dict[str, Any]) -> dict:
         """Callback on_dag_run_success/failure. Recomputa rollup."""
         r = self._client.post(
-            f"/tenants/{tenant_id}/sync-runs/finalize", json=payload
+            f"/tenants/{tenant_id}/pipeline-runs/finalize", json=payload
         )
-        r.raise_for_status()
-        return r.json()
-
-    def emit_usage(self, tenant_id: str, payload: dict[str, Any]) -> dict:
-        r = self._client.post(f"/tenants/{tenant_id}/usage/events", json=payload)
         r.raise_for_status()
         return r.json()
 
@@ -98,9 +111,3 @@ class PlatformClient:
 
     def close(self) -> None:
         self._client.close()
-
-    @staticmethod
-    def _json_safe(value: Any) -> Any:
-        if isinstance(value, Decimal):
-            return float(value)
-        return value
