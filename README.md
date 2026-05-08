@@ -2,7 +2,7 @@
 
 Repositório de **Airflow + DAGs + plugins (conectores ETL) + dbt projects** da plataforma datajoin.
 
-> **API + Portal + Postgres** vivem no repositório irmão [`datajoin-app`](https://github.com/MuriloRV/datajoin-app). Os 2 composes compartilham a network docker `dj_network` e o Postgres provisionado pelo `datajoin-app` (que cria o db `airflow` consumido aqui).
+> **API + Portal + Postgres** vivem no repositório irmão [`datajoin-app`](https://github.com/MuriloRV/datajoin-app). Os dois composes compartilham a network docker `dj_network` e o Postgres provisionado pelo `datajoin-app` (que cria o db `airflow` consumido aqui).
 
 ## Dois caminhos: dev local vs prod
 
