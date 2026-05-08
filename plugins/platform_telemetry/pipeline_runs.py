@@ -1,22 +1,22 @@
-"""Callbacks de DAG-level pra publicar SyncRun (rollup de DAG run).
+"""Callbacks de DAG-level pra publicar PipelineRun (rollup de DAG run).
 
 Uso na DAG:
 
-    from platform_telemetry.sync import sync_run_start, sync_run_finalize
+    from platform_telemetry import pipeline_run_start, pipeline_run_finalize
 
     with DAG(
         "luminea__conta_azul_etl",
-        on_success_callback=lambda ctx: sync_run_finalize(
+        on_success_callback=lambda ctx: pipeline_run_finalize(
             ctx, tenant_slug="luminea", status="success"),
-        on_failure_callback=lambda ctx: sync_run_finalize(
+        on_failure_callback=lambda ctx: pipeline_run_finalize(
             ctx, tenant_slug="luminea", status="failed"),
         ...
     ) as dag:
         @task
-        def _start_sync(**ctx):
-            sync_run_start(ctx, tenant_slug="luminea")
+        def _start_pipeline(**ctx):
+            pipeline_run_start(ctx, tenant_slug="luminea")
 
-Por que `_start_sync` em vez de `on_dag_run_start`: Airflow 3.x ainda nao
+Por que `_start_pipeline` em vez de `on_dag_run_start`: Airflow 3.x ainda nao
 oferece um hook estavel pra "comecou de verdade". Hook `on_execute` e'
 por-task. Solucao pratica: primeira task da DAG dispara o start callback.
 Idempotente — se a DAG re-roda, finalize recomputa do zero.
@@ -53,13 +53,13 @@ def _started_at(dag_run: Any) -> str:
     return started.isoformat() if hasattr(started, "isoformat") else str(started)
 
 
-def sync_run_start(
+def pipeline_run_start(
     context: dict,
     *,
     tenant_slug: str,
     service_instance_id: str | None = None,
 ) -> None:
-    """Cria a SyncRun com status=running. Idempotente.
+    """Cria a PipelineRun com status=running. Idempotente.
 
     Chamada como primeira task da DAG. Se start callback ja rodou (retry),
     o backend faz UPDATE no lugar de INSERT.
@@ -77,22 +77,22 @@ def sync_run_start(
         tenant = resolve_tenant_by_slug(tenant_slug)
         client = PlatformClient()
         try:
-            client.start_sync_run(tenant["id"], payload)
+            client.start_pipeline_run(tenant["id"], payload)
         finally:
             client.close()
     except Exception:
-        # Telemetria NUNCA pode quebrar a DAG. Sem SyncRun, o tenant view
-        # mostra orphan job_runs (depois o backfill pode reconciliar).
-        logger.exception("sync_run_start failed (tenant=%s)", tenant_slug)
+        # Telemetria NUNCA pode quebrar a DAG. Sem PipelineRun, o tenant view
+        # mostra orphan pipeline_tasks (depois o backfill pode reconciliar).
+        logger.exception("pipeline_run_start failed (tenant=%s)", tenant_slug)
 
 
-def sync_run_finalize(
+def pipeline_run_finalize(
     context: dict,
     *,
     tenant_slug: str,
     status: str,
 ) -> None:
-    """Atualiza a SyncRun com rollup das job_runs filhas. Idempotente.
+    """Atualiza a PipelineRun com rollup das pipeline_tasks filhas. Idempotente.
 
     Chamada via on_success_callback / on_failure_callback da DAG.
     `status` reflete o que o Airflow viu — backend pode sobrescrever pra
@@ -114,8 +114,8 @@ def sync_run_finalize(
         tenant = resolve_tenant_by_slug(tenant_slug)
         client = PlatformClient()
         try:
-            client.finalize_sync_run(tenant["id"], payload)
+            client.finalize_pipeline_run(tenant["id"], payload)
         finally:
             client.close()
     except Exception:
-        logger.exception("sync_run_finalize failed (tenant=%s)", tenant_slug)
+        logger.exception("pipeline_run_finalize failed (tenant=%s)", tenant_slug)

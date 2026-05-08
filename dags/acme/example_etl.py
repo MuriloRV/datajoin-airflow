@@ -2,11 +2,11 @@
 
 Demonstra o fluxo ponta a ponta:
 1. Resolve tenant + warehouse config via API Core (lookup por slug).
-2. Abre TelemetryContext — emite job_run 'running' imediatamente.
+2. Abre TelemetryContext — emite pipeline_task 'running' imediatamente.
 3. "Extrai" dados de uma fonte fake (lista inline).
 4. Grava no schema do tenant no Postgres DW (cria schema+tabela se não existirem).
-5. Emite métricas de uso (rows_inserted, bytes_processed).
-6. Ao fechar o contexto, publica job_run 'success' com duração total.
+5. Reporta rows_inserted via TelemetryContext.
+6. Ao fechar o contexto, publica pipeline_task 'success' com duração total.
 
 run_type é detectado automaticamente: 'scheduled' quando o Airflow dispara pelo
 cron; 'manual' quando alguém dispara pela UI ou pelo botão do portal.
@@ -98,9 +98,6 @@ def acme__example_etl():
 
             # ─── Telemetria ───
             tele.add_rows_inserted(len(fake_rows))
-            # Métrica adicional: tamanho aproximado em bytes (p/ futuras cobranças por volume).
-            approx_bytes = sum(len(str(r)) for r in fake_rows)
-            tele.emit("bytes_processed", approx_bytes, "bytes")
 
     ingest_customers()
 

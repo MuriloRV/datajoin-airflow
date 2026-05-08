@@ -67,7 +67,7 @@ datajoin-airflow/
 | Direção | Como | O quê |
 |---|---|---|
 | Airflow → Postgres | Rede docker `dj_network`, hostname `postgres:5432` | metadata do Airflow (db `airflow`, user `airflow`) + DW (db `warehouse`, user `dw_admin`) |
-| Airflow → API datajoin | HTTP `http://api:8000` (rede compartilhada) com header `X-Service-Token` | reportar telemetria de runs, ler config de tenant, etc |
+| Airflow → API datajoin | HTTP `http://api:8000` (rede compartilhada) com header `Authorization: Bearer $SERVICE_TOKEN` | reportar telemetria de runs (`pipeline-runs`, `pipeline-tasks`), ler config de tenant, watermarks |
 | API datajoin → Airflow | HTTP `http://airflow-apiserver:8080` (rede compartilhada) | trigger DAG, ler status, gerenciar Connections |
 
 Auth de service-to-service é via `SERVICE_TOKEN` (estático em dev). Em prod: substituir por OIDC/mTLS.

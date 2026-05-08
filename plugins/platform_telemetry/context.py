@@ -1,10 +1,9 @@
-"""TelemetryContext — context manager que envolve uma task e publica job_run ao final."""
+"""TelemetryContext — context manager que envolve uma task e publica pipeline_task ao final."""
 from __future__ import annotations
 
 import traceback
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from decimal import Decimal
 from typing import Any
 
 from platform_telemetry.client import PlatformClient
@@ -45,7 +44,6 @@ class TelemetryContext:
     rows_updated: int = 0
     rows_deleted: int = 0
     _started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    _extra_metrics: list[dict[str, Any]] = field(default_factory=list)
 
     # ─── Construtor idiomático a partir do context do Airflow ───
     @classmethod
@@ -59,7 +57,6 @@ class TelemetryContext:
         task_instance = context["task_instance"]
         airflow_run_type = getattr(dag_run, "run_type", None)
         triggered_by = None
-        # Em 3.x: dag_run.triggered_by pode trazer o usuário que disparou manual.
         if airflow_run_type == "manual":
             triggered_by = getattr(dag_run, "triggered_by", None) or "airflow-ui"
         elif airflow_run_type == "scheduled":
@@ -85,13 +82,9 @@ class TelemetryContext:
     def add_rows_deleted(self, n: int) -> None:
         self.rows_deleted += n
 
-    def emit(self, metric: str, value: float | int | Decimal, unit: str) -> None:
-        """Evento de uso arbitrário (bytes_processed, api_calls, etc)."""
-        self._extra_metrics.append({"metric": metric, "value": float(value), "unit": unit})
-
     # ─── context manager ───
     def __enter__(self) -> "TelemetryContext":
-        # Publica o job_run como 'running' imediatamente (visibilidade pro cliente).
+        # Publica a pipeline_task como 'running' imediatamente (visibilidade pro cliente).
         self._send(status="running", finished_at=None, error=None)
         return self
 
@@ -102,29 +95,23 @@ class TelemetryContext:
         else:
             err = "".join(traceback.format_exception(exc_type, exc_val, exc_tb))[:4000]
             self._send(status="failed", finished_at=finished_at, error=err)
-        self._flush_extra_metrics()
         self.client.close()
         return False  # nunca engole a exceção
 
     # ─── internal ───
     def _send(self, *, status: str, finished_at: datetime | None, error: str | None) -> None:
         # Mapped tasks: inclui [map_index] no external_run_id pra cada
-        # instance ser unica. Tasks nao-mapeadas mantem formato original
-        # (backwards compatible).
+        # instance ser unica. Tasks nao-mapeadas mantem formato original.
         suffix = f"[{self.map_index}]" if self.map_index >= 0 else ""
         external_run_id = f"{self.run_id}::{self.task_id}{suffix}"
-        payload = {
+        payload: dict[str, Any] = {
             "source": "airflow",
             "external_run_id": external_run_id,
-            # dag_run_id separado de external_run_id permite agrupamento
-            # de JobRuns numa SyncRun via (tenant_id, dag_id, dag_run_id).
-            # Adicionado 2026-05-03 (Phase 2 do master_release_plan).
+            "dag_id": self.dag_id,
             "dag_run_id": self.run_id,
             "service_instance_id": self.service_instance_id,
-            "dag_id": self.dag_id,
             "task_id": self.task_id,
             "status": status,
-            "run_type": self.run_type,
             "triggered_by": self.triggered_by,
             "started_at": self._started_at.isoformat(),
             "finished_at": finished_at.isoformat() if finished_at else None,
@@ -134,18 +121,9 @@ class TelemetryContext:
             "error_message": error,
         }
         try:
-            self.client.upsert_job_run(self.tenant_id, payload)
+            self.client.upsert_pipeline_task(self.tenant_id, payload)
         except Exception:
             # Telemetria NUNCA deve quebrar a task. Só registra no log do Airflow.
             import logging
 
-            logging.exception("telemetry upsert_job_run failed")
-
-    def _flush_extra_metrics(self) -> None:
-        for m in self._extra_metrics:
-            try:
-                self.client.emit_usage(self.tenant_id, m)
-            except Exception:
-                import logging
-
-                logging.exception("telemetry emit_usage failed (metric=%s)", m.get("metric"))
+            logging.exception("telemetry upsert_pipeline_task failed")
