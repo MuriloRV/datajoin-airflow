@@ -90,7 +90,7 @@ import platform_warnings  # noqa: F401  -- side effect: filtra warnings do Cosmo
 
 Esse import **tem que vir antes de `from cosmos import ...`** — instala filtros que silenciam ~5 deprecation warnings por task que vêm da Cosmos 1.14.x x Airflow 3.x. Sem ele, os logs ficam ilegíveis (centenas de linhas de ruído escondendo warnings reais). Detalhes no docstring de `plugins/platform_warnings.py`.
 
-> **Pegadinha:** o `dag_id` precisa bater com `ServiceInstance.config.dag_id` no banco datajoin (responsabilidade do passo de cadastro do tenant, não do conector). Sem isso a DAG roda mas os callbacks de `JobRun` não chegam no portal — telemetria silenciosamente quebrada.
+> **Pegadinha:** o `dag_id` precisa bater com `ServiceInstance.config.dag_id` no banco datajoin (responsabilidade do passo de cadastro do tenant, não do conector). Sem isso a DAG roda mas os callbacks de `pipeline_run`/`pipeline_task` não chegam no portal — telemetria silenciosamente quebrada.
 
 ---
 
@@ -159,7 +159,7 @@ Causa: API retornou `{"items": null}` ou `{"items": []}` em página vazia (termi
 
 Fix: já tratado em `client.py:list_customers` — distingue "chave ausente" de "chave presente com null/[]". Se o warning aparecer em produção, é sinal de que a API mudou shape — investigar antes de silenciar.
 
-### DAG roda mas portal datajoin não mostra `JobRun`
+### DAG roda mas portal datajoin não mostra a `PipelineRun`
 
 Causa: `ServiceInstance` no banco da plataforma sem `config.dag_id` apontando pro `dag_id` correto. Não é um problema do conector — é do cadastro do tenant na plataforma.
 

@@ -75,7 +75,7 @@ Trade-off: factory é "mágica" — debug mais difícil, e erro na factory derru
 
 ## Suspender DAGs de tenant suspenso
 
-`tenants.status='suspended'` deve refletir em DAGs pausadas. Hoje feito por API call (`POST /tenants/{tid}/dags/{dag_id}/pause` — endpoint existente). Em factory pattern, basta a factory pular tenants suspensos no loop e o DagBag remove a DAG.
+`tenants.status='suspended'` deve refletir em DAGs pausadas. Hoje feito por API call (`POST /tenants/{tid}/pipelines/{airflow_dag_id}/pause` — endpoint existente). Em factory pattern, basta a factory pular tenants suspensos no loop e o DagBag remove a DAG.
 
 ## Templating
 
@@ -85,4 +85,4 @@ DAG é Python — não tem placeholder mágico. Slug do tenant fica como constan
 
 1. **`max_active_runs=1` em DAGs dbt** — evita 2 instâncias gravando no mesmo `target/`. Já está em `acme__dbt_build`.
 2. **`catchup=False`** em todas — não queremos backfill automático (rodar 30 dias retroativos quando alguém ativa a DAG).
-3. **Telemetria via `TelemetryContext.from_airflow(context, tenant_id=...)`** — sempre. Job_runs aparece no portal por causa disso.
+3. **Telemetria via `TelemetryContext.from_airflow(context, tenant_id=...)`** — sempre. As pipeline_runs/pipeline_tasks aparecem no portal por causa disso.

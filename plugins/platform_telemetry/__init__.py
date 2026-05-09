@@ -4,7 +4,7 @@ Uso típico dentro de uma task:
 
     from platform_telemetry import TelemetryContext
 
-    with TelemetryContext.from_airflow(context, tenant_id, service_instance_id) as tele:
+    with TelemetryContext.from_airflow(context, tenant_id) as tele:
         rows = extract_and_load(...)
         tele.add_rows_inserted(rows)
 

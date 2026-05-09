@@ -28,19 +28,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 from platform_telemetry.client import PlatformClient
-from platform_telemetry.context import _map_airflow_run_type
+from platform_telemetry.context import _map_airflow_run_type, _resolve_triggered_by
 from platform_telemetry.helpers import resolve_tenant_by_slug
 
 logger = logging.getLogger(__name__)
-
-
-def _resolve_triggered_by(dag_run: Any) -> str | None:
-    run_type = getattr(dag_run, "run_type", None)
-    if run_type == "manual":
-        return getattr(dag_run, "triggered_by", None) or "airflow-ui"
-    if run_type == "scheduled":
-        return "airflow-scheduler"
-    return None
 
 
 def _started_at(dag_run: Any) -> str:
@@ -57,7 +48,6 @@ def pipeline_run_start(
     context: dict,
     *,
     tenant_slug: str,
-    service_instance_id: str | None = None,
 ) -> None:
     """Cria a PipelineRun com status=running. Idempotente.
 
@@ -66,12 +56,11 @@ def pipeline_run_start(
     """
     dag_run = context["dag_run"]
     payload = {
-        "dag_id": dag_run.dag_id,
-        "dag_run_id": dag_run.run_id,
+        "airflow_dag_id": dag_run.dag_id,
+        "airflow_run_id": dag_run.run_id,
         "run_type": _map_airflow_run_type(getattr(dag_run, "run_type", None)),
         "triggered_by": _resolve_triggered_by(dag_run),
         "started_at": _started_at(dag_run),
-        "service_instance_id": service_instance_id,
     }
     try:
         tenant = resolve_tenant_by_slug(tenant_slug)
@@ -103,8 +92,8 @@ def pipeline_run_finalize(
         getattr(dag_run, "end_date", None) or datetime.now(timezone.utc)
     )
     payload = {
-        "dag_id": dag_run.dag_id,
-        "dag_run_id": dag_run.run_id,
+        "airflow_dag_id": dag_run.dag_id,
+        "airflow_run_id": dag_run.run_id,
         "finished_at": (
             finished_at.isoformat() if hasattr(finished_at, "isoformat") else str(finished_at)
         ),

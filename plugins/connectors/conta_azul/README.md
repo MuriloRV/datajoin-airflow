@@ -130,7 +130,7 @@ A DAG roda inteira retornando 25 customers fake.
 2. Copiar `dags/luminea/conta_azul.py` para `dags/<tenant>/conta_azul.py` e ajustar:
    - `TENANT_SLUG = "<novo>"`
    - tags (`tenant:<slug>`)
-3. Registrar `ServiceInstance` no banco da plataforma com `kind=etl` e `config.dag_id` apontando pro novo `dag_id`. Sem isso, `JobRun` callbacks não aparecem no portal.
+3. Registrar `ServiceInstance` no banco da plataforma com `kind=etl` e `config.dag_id` apontando pro novo `dag_id`. Sem isso, os callbacks de `pipeline_run`/`pipeline_task` não aparecem no portal.
 
 ## Estrutura interna
 

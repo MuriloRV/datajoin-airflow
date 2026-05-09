@@ -255,7 +255,7 @@ def luminea__conta_azul_etl():
 
     # 2) Cosmos expande staging + curated em tasks individuais
     # (1 por model + 1 por test). Filtro via tags definidas no
-    # dbt_project.yml. Callback reporta 1 JobRun por model.
+    # dbt_project.yml. Callback reporta 1 PipelineTask por model.
     dbt_staging_curated = DbtTaskGroup(
         group_id="dbt_staging_curated",
         project_config=ProjectConfig(DBT_PROJECT_DIR),

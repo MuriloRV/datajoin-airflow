@@ -32,9 +32,9 @@ class PlatformClient:
 
     # ─── PipelineTask (mig 0036) ─────────────────────────────────
     # 1 callback por task do Airflow. Idempotente por
-    # (tenant_id, source, external_run_id, task_id). Liga ao
-    # PipelineRun pai via (dag_id, dag_run_id) — retro-link automatico
-    # quando o start callback chega depois.
+    # (tenant_id, source, external_run_id, airflow_task_id). Liga ao
+    # PipelineRun pai via (airflow_dag_id, airflow_run_id) — retro-link
+    # automatico quando o start callback chega depois.
 
     def upsert_pipeline_task(self, tenant_id: str, payload: dict[str, Any]) -> dict:
         r = self._client.post(
