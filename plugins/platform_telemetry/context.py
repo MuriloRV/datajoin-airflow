@@ -24,18 +24,34 @@ def _map_airflow_run_type(airflow_run_type: str | None) -> str:
     return mapping.get(airflow_run_type, "other")
 
 
+def _resolve_triggered_by(dag_run: Any) -> str | None:
+    """Normaliza `triggered_by` consistente em todos os callbacks (DAG, task, dbt).
+
+    Garante que o portal sempre veja "airflow-scheduler" / "airflow-ui" /
+    nome do user — sem variantes como "scheduler" puro.
+    """
+    run_type = getattr(dag_run, "run_type", None)
+    if run_type == "manual":
+        return getattr(dag_run, "triggered_by", None) or "airflow-ui"
+    if run_type == "scheduled":
+        return "airflow-scheduler"
+    return None
+
+
 @dataclass
 class TelemetryContext:
     tenant_id: str
-    service_instance_id: str | None
-    dag_id: str
-    task_id: str
-    run_id: str
+    # Prefixo airflow_* deixa explicita a fronteira de integracao: esses ids
+    # vem literalmente do orquestrador e sao gravados como `airflow_*` nas
+    # tabelas pipeline_runs / pipeline_tasks do portal.
+    airflow_dag_id: str
+    airflow_task_id: str
+    airflow_run_id: str
     run_type: str
     # map_index: -1 para task nao-mapeada; 0..N-1 para mapped task instances
     # criadas via @task.expand(...). Incluido na chave de idempotencia
     # (external_run_id) pra evitar colisao quando varios items rodam em
-    # paralelo com mesmo task_id.
+    # paralelo com mesmo airflow_task_id.
     map_index: int = -1
     triggered_by: str | None = None
     client: PlatformClient = field(default_factory=PlatformClient)
@@ -51,25 +67,17 @@ class TelemetryContext:
         cls,
         context: dict,
         tenant_id: str,
-        service_instance_id: str | None = None,
     ) -> "TelemetryContext":
         dag_run = context["dag_run"]
         task_instance = context["task_instance"]
-        airflow_run_type = getattr(dag_run, "run_type", None)
-        triggered_by = None
-        if airflow_run_type == "manual":
-            triggered_by = getattr(dag_run, "triggered_by", None) or "airflow-ui"
-        elif airflow_run_type == "scheduled":
-            triggered_by = "airflow-scheduler"
         return cls(
             tenant_id=tenant_id,
-            service_instance_id=service_instance_id,
-            dag_id=task_instance.dag_id,
-            task_id=task_instance.task_id,
-            run_id=dag_run.run_id,
-            run_type=_map_airflow_run_type(airflow_run_type),
+            airflow_dag_id=task_instance.dag_id,
+            airflow_task_id=task_instance.task_id,
+            airflow_run_id=dag_run.run_id,
+            run_type=_map_airflow_run_type(getattr(dag_run, "run_type", None)),
             map_index=getattr(task_instance, "map_index", -1),
-            triggered_by=triggered_by,
+            triggered_by=_resolve_triggered_by(dag_run),
         )
 
     # ─── API para uso dentro da task ───
@@ -103,14 +111,13 @@ class TelemetryContext:
         # Mapped tasks: inclui [map_index] no external_run_id pra cada
         # instance ser unica. Tasks nao-mapeadas mantem formato original.
         suffix = f"[{self.map_index}]" if self.map_index >= 0 else ""
-        external_run_id = f"{self.run_id}::{self.task_id}{suffix}"
+        external_run_id = f"{self.airflow_run_id}::{self.airflow_task_id}{suffix}"
         payload: dict[str, Any] = {
             "source": "airflow",
             "external_run_id": external_run_id,
-            "dag_id": self.dag_id,
-            "dag_run_id": self.run_id,
-            "service_instance_id": self.service_instance_id,
-            "task_id": self.task_id,
+            "airflow_dag_id": self.airflow_dag_id,
+            "airflow_run_id": self.airflow_run_id,
+            "airflow_task_id": self.airflow_task_id,
             "status": status,
             "triggered_by": self.triggered_by,
             "started_at": self._started_at.isoformat(),

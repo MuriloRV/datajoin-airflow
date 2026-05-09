@@ -141,7 +141,7 @@ Pra cada novo cliente que usa Conta Azul:
 
 4. **Registrar no API metadata:**
    - `ServiceInstance` com `kind=etl` e `config.dag_id=<tenant>__conta_azul_etl`
-   - Sem isso, JobRun callbacks não aparecem no portal
+   - Sem isso, callbacks de `pipeline_run`/`pipeline_task` não aparecem no portal
 
 5. **Primeira run:**
    - Trigger manual, monitorar

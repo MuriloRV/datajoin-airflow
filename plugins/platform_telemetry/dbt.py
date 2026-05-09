@@ -68,26 +68,26 @@ def dbt_model_callback(
     ti = context.get("task_instance")
     if ti is None:
         return
-    # Cosmos cria duas variantes de task_id pra modelos:
+    # Cosmos cria duas variantes de airflow_task_id pra modelos:
     # - Com tests:    'dbt_staging_curated.dim_conta_azul__customers.run'
     # - Sem tests:    'dbt_delivery.conta_azul__customers_summary_run'
-    task_id = ti.task_id
-    if task_id.endswith(".run"):
-        model_name = task_id.split(".")[-2]
-    elif task_id.endswith("_run"):
-        model_name = task_id.split(".")[-1].removesuffix("_run")
+    airflow_task_id = ti.task_id
+    if airflow_task_id.endswith(".run"):
+        model_name = airflow_task_id.split(".")[-2]
+    elif airflow_task_id.endswith("_run"):
+        model_name = airflow_task_id.split(".")[-1].removesuffix("_run")
     else:
         return  # nao e' uma task de model (test, group internal, etc)
 
     try:
         from platform_telemetry.client import PlatformClient
+        from platform_telemetry.context import _resolve_triggered_by
         from platform_telemetry.helpers import resolve_tenant_by_slug
 
         tenant = resolve_tenant_by_slug(tenant_slug)
         dag_run = context.get("dag_run")
-        run_id = getattr(dag_run, "run_id", "unknown")
-        dag_id = getattr(dag_run, "dag_id", None)
-        triggered_by = getattr(dag_run, "triggering_user_name", None) or "scheduler"
+        airflow_run_id = getattr(dag_run, "run_id", "unknown")
+        airflow_dag_id = getattr(dag_run, "dag_id", None)
 
         # ti.state pode vir como TaskInstanceState enum em Airflow 3 — str() normaliza.
         state_str = str(ti.state).lower() if ti.state else "unknown"
@@ -97,12 +97,12 @@ def dbt_model_callback(
 
         payload = {
             "source": "dbt",
-            "external_run_id": f"{run_id}::{ti.task_id}",
-            "dag_id": dag_id,
-            "dag_run_id": run_id,
-            "task_id": ti.task_id,
+            "external_run_id": f"{airflow_run_id}::{airflow_task_id}",
+            "airflow_dag_id": airflow_dag_id,
+            "airflow_run_id": airflow_run_id,
+            "airflow_task_id": airflow_task_id,
             "status": "success" if is_success else "failed",
-            "triggered_by": str(triggered_by),
+            "triggered_by": _resolve_triggered_by(dag_run),
             "started_at": ti.start_date.isoformat() if ti.start_date else None,
             "finished_at": ti.end_date.isoformat() if ti.end_date else None,
             "rows_updated": rows_updated,
