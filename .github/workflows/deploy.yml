@@ -141,18 +141,28 @@ jobs:
           ssh -i ~/.ssh/deploy_key deploy@${{ secrets.VM_HOST }} \
             'cd /opt/datajoin/airflow && docker compose pull'
 
-      - name: Run airflow db migrate + write auth file (idempotent)
-        # `compose run --rm` roda o airflow-init isolado: airflow db migrate +
-        # printf do JSON da senha do SimpleAuthManager. Idempotente — migrate
-        # do Airflow checa o que falta antes de aplicar. Equivale ao `alembic
-        # upgrade head` do datajoin-app.
+      - name: Ensure airflow-postgres is up (idempotent)
+        # Sobe o postgres dedicado antes do migrate. Idempotente — se ja
+        # estiver healthy, no-op. NUNCA --force-recreate aqui: data fica em
+        # named volume `airflow_pg_data`, mas restart desnecessario causa
+        # churn de connection pool nos services Airflow.
+        run: |
+          ssh -i ~/.ssh/deploy_key deploy@${{ secrets.VM_HOST }} \
+            'cd /opt/datajoin/airflow && docker compose up -d --wait airflow-postgres'
+
+      - name: Run airflow db migrate + bootstrap admin user (idempotent)
+        # `compose run --rm` roda o airflow-init isolado: `airflow db migrate`
+        # (schema core + tabelas FAB) + `airflow users create` do admin.
+        # Idempotente — migrate checa o que falta antes de aplicar, e o
+        # users create falha graciosamente via `|| echo` se o user ja existe.
         run: |
           ssh -i ~/.ssh/deploy_key deploy@${{ secrets.VM_HOST }} \
             'cd /opt/datajoin/airflow && docker compose run --rm -T airflow-init'
 
       - name: Compose up (force recreate + wait)
-        # --no-deps: nao sobe airflow-init de novo (one-shot ja rodou no step
-        # acima; depends_on dos services aponta pra ele).
+        # --no-deps: nao recria airflow-init/airflow-postgres. Init e' one-shot
+        # (ja rodou); postgres fica de pe entre deploys (manter conexoes vivas).
+        # Lista explicita dos 4 services Airflow que precisam de nova imagem.
         run: |
           ssh -i ~/.ssh/deploy_key deploy@${{ secrets.VM_HOST }} \
             'cd /opt/datajoin/airflow && docker compose up -d --no-deps --remove-orphans --force-recreate --wait airflow-apiserver airflow-scheduler airflow-dag-processor airflow-triggerer'

@@ -2,7 +2,7 @@
 
 Repositório de **Airflow + DAGs + plugins (conectores ETL) + dbt projects** da plataforma datajoin.
 
-> **API + Portal + Postgres** vivem no repositório irmão [`datajoin-app`](https://github.com/MuriloRV/datajoin-app). Os dois composes compartilham a network docker `dj_network` e o Postgres provisionado pelo `datajoin-app` (que cria o db `airflow` consumido aqui).
+> **API + Portal + Postgres do app** vivem no repositório irmão [`datajoin-app`](https://github.com/MuriloRV/datajoin-app). Os dois composes compartilham a network docker `dj_network`. O Airflow tem **Postgres próprio** (`airflow-postgres`) só pro metadata interno; o Postgres do `datajoin-app` (host `postgres`) segue sendo o DW (warehouse) onde as DAGs escrevem.
 
 ## Dois caminhos: dev local vs prod
 
@@ -12,7 +12,8 @@ Repositório de **Airflow + DAGs + plugins (conectores ETL) + dbt projects** da 
 | Onde mora | sua máquina | VM Hostinger KVM 4 (16 GB) |
 | DAGs/plugins | volume mount (hot reload) | baked na imagem |
 | Imagem | build local | `ghcr.io/MuriloRV/datajoin-airflow/airflow:<tag>` (CI builda+pusha) |
-| Postgres | container do `datajoin-app` | container Docker do `datajoin-app` na MESMA VM (`dj_network`) |
+| Postgres metadata | `airflow-postgres` deste compose (volume `airflow_pg_data`) | mesmo service na MESMA VM, named volume persistente |
+| Postgres DW | `postgres` do `datajoin-app` via `dj_network` | idem, na mesma VM |
 | UI | `localhost:8080` (porta exposta) | `airflow.datajoin.cloud` via Cloudflare Tunnel (sem porta exposta) |
 | Logs | named volume `airflow_logs` | named volume `airflow_logs` (acesso via `docker compose logs`) |
 | Pipeline | NÃO entra no pipeline | `.github/workflows/deploy.yml` (push em main → SSH → compose up) |
@@ -22,24 +23,24 @@ Repositório de **Airflow + DAGs + plugins (conectores ETL) + dbt projects** da 
 ## Pré-requisitos (dev)
 
 - Docker Desktop com Compose v2
-- Repo `datajoin-app` clonado ao lado e com o `postgres` rodando
+- Repo `datajoin-app` clonado ao lado, com `postgres` + `api` rodando (cria a rede `dj_network` e expõe o DW)
 
 ## Setup local (primeira vez)
 
 ```bash
-# 1. sobe o postgres do datajoin-app (cria a rede dj_network e provisiona o db `airflow`)
+# 1. sobe o postgres (DW) e api do datajoin-app — cria a rede dj_network
 cd ../datajoin-app
-docker compose up -d postgres
+docker compose up -d postgres api
 
 # 2. cria .env do airflow a partir do template
 cd ../datajoin-airflow
 cp .env.example .env
 
-# 3. sobe os 4 services do Airflow (init -> apiserver + dag-processor + scheduler)
+# 3. sobe o Airflow (airflow-postgres -> init -> apiserver + scheduler + dag-processor + triggerer)
 docker compose up -d --build
 ```
 
-UI do Airflow: http://localhost:8080 (admin / admin).
+UI do Airflow: http://localhost:8080 (admin / admin). Pra gerenciar users e roles, vai em **Security → List Users / List Roles** (FabAuthManager).
 
 ## Estrutura
 
@@ -55,10 +56,10 @@ datajoin-airflow/
 ├── docker/
 │   ├── Dockerfile                     # apache/airflow:3.2.0-python3.13 + libpq + requirements + DAGs/plugins/dbt baked
 │   └── requirements.txt               # libs Python adicionais (cosmos, conectores, etc)
-├── docker-compose.yml                 # DEV-ONLY — 5 services Airflow (init/api/dag-processor/scheduler/triggerer)
+├── docker-compose.yml                 # DEV-ONLY — airflow-postgres + 5 services Airflow (init/api/dag-processor/scheduler/triggerer)
 ├── compose.prod.yml                   # PROD — mesmos services com imagem ghcr + recursos limits, sem ports
 ├── .github/workflows/deploy.yml       # push em main -> build+push ghcr -> SSH na VM -> compose up
-├── .env.example                       # FERNET_KEY, JWT_SECRET, SERVICE_TOKEN, ADMIN_PASSWORD ... (DEV)
+├── .env.example                       # FERNET_KEY, JWT_SECRET, SERVICE_TOKEN, ADMIN_USERNAME/PASSWORD/EMAIL ... (DEV)
 └── .env.prod.example                  # template do .env de prod (renderizado pelo CI a partir de secrets)
 ```
 
@@ -66,18 +67,21 @@ datajoin-airflow/
 
 | Direção | Como | O quê |
 |---|---|---|
-| Airflow → Postgres | Rede docker `dj_network`, hostname `postgres:5432` | metadata do Airflow (db `airflow`, user `airflow`) + DW (db `warehouse`, user `dw_admin`) |
+| Airflow → Postgres metadata | hostname interno `airflow-postgres:5432`, db/user `airflow` | metadata do Airflow (DAG runs, Connections, Variables, tabelas FAB) — **isolado do app** |
+| Airflow → Postgres DW | `postgres:5432` via `dj_network` | DW (db `warehouse`, user `dw_admin`) — Postgres do `datajoin-app` |
 | Airflow → API datajoin | HTTP `http://api:8000` (rede compartilhada) com header `Authorization: Bearer $SERVICE_TOKEN` | reportar telemetria de runs (`pipeline-runs`, `pipeline-tasks`), ler config de tenant, watermarks |
 | API datajoin → Airflow | HTTP `http://airflow-apiserver:8080` (rede compartilhada) | trigger DAG, ler status, gerenciar Connections |
 
 Auth de service-to-service é via `SERVICE_TOKEN` (estático em dev). Em prod: substituir por OIDC/mTLS.
+
+> **TODO datajoin-app cleanup:** o `docker/postgres/init.sh` do `datajoin-app` ainda cria o role + db `airflow` no Postgres do app. Como o metadata agora vive no `airflow-postgres` deste repo, esse role/db ficou órfão lá — não causa dano (ninguém usa), mas vale remover numa próxima janela pra não confundir quem ler depois.
 
 ## Airflow 3.x — pontos importantes
 
 - **`api-server` substitui `webserver`** (UI + REST API unificados na mesma porta 8080).
 - **`dag-processor` é processo dedicado** — saiu do scheduler. Necessário pra DAGs serem parseadas.
 - **Execution API com JWT compartilhado** — `AIRFLOW__API_AUTH__JWT_SECRET` precisa ser igual em apiserver e scheduler. Task workers assinam tokens com ela pra reportar status.
-- **`SimpleAuthManager` é dev-only.** Em prod usar FAB ou auth externo. Em dev, escrevemos manualmente o file `simple_auth_manager_passwords.json.generated` pra ter `admin/admin` previsível.
+- **`FabAuthManager` é a auth de produção.** Provider `apache-airflow-providers-fab==3.5.0` (pinado pelo constraints file do Airflow 3.2.0). RBAC com roles built-in (Admin / Op / User / Viewer / Public), UI de **Security → List Users / List Roles** pra gerenciar acesso, permissões granulares por DAG. O `airflow-init` faz o bootstrap do user admin via `airflow users create` no 1º boot (idempotente em re-runs). O FAB é instalado **com o constraints file do Airflow** (`docker/Dockerfile`) pra puxar `connexion` + `flask-*` nas versões testadas — sem isso o `db migrate` falha com `ModuleNotFoundError: No module named 'connexion'`.
 - **Cosmos chama `dbt parse` no import** da DAG — cacheado depois, mas o primeiro import pode bater 30s. Por isso o `DAG_FILE_PROCESSOR_TIMEOUT=120`.
 
 ## Conectores ETL
@@ -100,13 +104,18 @@ docker compose down                           # para (mantém volumes)
 docker compose down -v                        # DESTRUTIVO: apaga logs do Airflow
 ```
 
-Pra resetar o metadata do Airflow (apaga histórico de DAG runs):
+Pra resetar o metadata do Airflow (apaga histórico de DAG runs, Connections, users):
 
 ```bash
-# garante que o postgres do datajoin-app está rodando
-docker compose -f ../datajoin-app/docker-compose.yml exec postgres \
-  psql -U postgres -c "DROP DATABASE airflow; CREATE DATABASE airflow OWNER airflow;"
-docker compose up -d airflow-init  # roda `airflow db migrate` de novo
+# Opcao 1 (mais simples): apaga o volume inteiro do airflow-postgres
+docker compose down
+docker volume rm datajoin-airflow_airflow_pg_data
+docker compose up -d --build  # init recria schema + admin user
+
+# Opcao 2: drop/create do db sem perder o container (preserva senha/role)
+docker compose exec airflow-postgres \
+  psql -U airflow -d postgres -c "DROP DATABASE airflow; CREATE DATABASE airflow OWNER airflow;"
+docker compose run --rm airflow-init
 ```
 
 ## Princípios
@@ -123,7 +132,7 @@ Push em `main` → workflow `.github/workflows/deploy.yml`:
 
 1. Builda `docker/Dockerfile` (DAGs/plugins/dbt baked) e pusha pra `ghcr.io/MuriloRV/datajoin-airflow/airflow:sha-<commit>`
 2. SSH na VM (`deploy@$VM_HOST`), materializa `/opt/datajoin/airflow/.env` a partir do secret `AIRFLOW_DOTENV` + injeta `IMAGE_TAG`
-3. `docker compose pull` → `docker compose run --rm airflow-init` (= `airflow db migrate` + escreve auth file) → `docker compose up -d --no-deps --force-recreate --wait` (4 services principais)
+3. `docker compose pull` → `docker compose up -d --wait airflow-postgres` (idempotente; nunca recreate, dados ficam em named volume) → `docker compose run --rm airflow-init` (= `airflow db migrate` + `airflow users create` do admin) → `docker compose up -d --no-deps --force-recreate --wait` (4 services Airflow)
 4. Health check via `dj_network` em `http://airflow-apiserver:8080/api/v2/version`
 5. `docker image prune -af` (rollback continua possível via re-pull do ghcr)
 
@@ -146,10 +155,11 @@ O `cloudflared` já está na `dj_network`, então resolve `airflow-apiserver` po
 | `VM_HOST` | IP/DNS da VM Hostinger |
 | `AIRFLOW_DOTENV` | Conteúdo completo do `.env` de prod (ver `.env.prod.example`) |
 
-### Recursos (compose.prod.yml — limits ≈ 6.3 GB; sobra pro datajoin-app)
+### Recursos (compose.prod.yml — limits ≈ 6.8 GB; sobra pro datajoin-app)
 
 | Service | Memory limit | CPU limit |
 |---|---|---|
+| airflow-postgres | 512Mi | 0.5 |
 | airflow-apiserver | 768Mi | 1 |
 | airflow-scheduler | 4Gi | 2 |
 | airflow-dag-processor | 1Gi | 1 |

@@ -9,6 +9,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 USER airflow
 
 COPY docker/requirements.txt /tmp/requirements.txt
+# Instalacao em 2 passos por conta de conflito irreconciliavel entre
+# ecossistemas Airflow e dbt:
+#   - constraints do Airflow 3.2.0 pinam protobuf==6.x (deps internas)
+#   - dbt-core 1.9.1 exige protobuf<6
+# Passo 1: FAB provider COM constraints — pega FAB 3.5.0 + connexion +
+# flask-* nas versoes que o Airflow testou (sem isso FAB 2.x antigo
+# nao puxa connexion -> ImportError em runtime).
+# Passo 2: resto do requirements.txt SEM constraints — libera dbt+cosmos
+# com protobuf<6. FAB nao usa protobuf, entao downgrade nao quebra.
+RUN pip install --no-cache-dir apache-airflow-providers-fab==3.5.0 \
+    --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-3.2.0/constraints-3.13.txt"
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
 # Em prod, DAGs/plugins/dbt sao baked na imagem (k3s nao git-syncs).

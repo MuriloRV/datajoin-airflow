@@ -1,29 +1,49 @@
 # ============================================================================
 # DEV-ONLY — docker-compose para iteração local. NÃO é usado em deploy.
 #
-# O deploy de produção é via Helm/k3s (ver `deployment/` e
-# `.github/workflows/deploy.yml`). O pipeline NUNCA roda `docker compose`,
-# só builda a imagem `docker/Dockerfile` e importa no k3s.
-#
-# Este compose roda APENAS o Airflow. Postgres + Redis + API + Portal
-# vivem no repo `datajoin-app` (compose separado). A conexão é via rede
-# docker compartilhada `dj_network` — o Postgres deste compose é o do
-# datajoin-app, acessado pelo hostname `postgres`.
+# Este compose roda o Airflow + seu Postgres dedicado (`airflow-postgres`).
+# A rede dj_network e' compartilhada com o datajoin-app: o Airflow continua
+# falando com a API (api:8000) e com o Postgres do datajoin-app (`postgres`)
+# pra escrever no DW. O `airflow-postgres` deste compose serve APENAS pro
+# metadata interno do Airflow — nao tem relacao com o postgres do app.
 #
 # Pré-requisitos pra subir:
-#   1. `cd ../datajoin-app && docker compose up -d postgres` (cria rede + db airflow)
+#   1. `cd ../datajoin-app && docker compose up -d postgres api` (rede dj_network + DW + api)
 #   2. `cd ../datajoin-airflow && docker compose up -d`
 # ============================================================================
 services:
+  # ─────────── Postgres dedicado pro metadata do Airflow ───────────
+  # A imagem oficial cria role+db `airflow` no 1o boot (a partir de
+  # POSTGRES_USER + POSTGRES_DB). Sem init.sh — provisionamento e' implicito.
+  airflow-postgres:
+    image: postgres:16-alpine
+    container_name: dj_airflow_postgres
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: ${AIRFLOW_DB_PASSWORD:-airflow}
+      POSTGRES_DB: airflow
+    volumes:
+      - airflow_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow -d airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    # Sem ports: expostos — debug via `docker compose exec airflow-postgres psql`.
+
   # ─────────── Airflow 3.x (LocalExecutor, dev) ───────────
   airflow-init:
     build:
       context: .
       dockerfile: docker/Dockerfile
     container_name: dj_airflow_init
+    depends_on:
+      airflow-postgres:
+        condition: service_healthy
     environment: &airflow-env
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:${AIRFLOW_DB_PASSWORD:-airflow}@postgres:5432/airflow
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:${AIRFLOW_DB_PASSWORD:-airflow}@airflow-postgres:5432/airflow
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       # 1 run por DAG por vez (mesmo comportamento do prod). DAG individual
       # pode setar max_active_runs=N pra subir, mas o default e' 1.
@@ -36,15 +56,21 @@ services:
       # Airflow 3.x: URL que os task workers usam para falar com a execution API
       # (embutida no api-server). Sem isso, tasks falham com Connection refused.
       AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
-      AIRFLOW__API__BASE_URL: http://airflow-apiserver:8080
-      # Airflow 3.x: auth manager (Simple p/ dev local; FAB para produção se quiser UI de users).
-      AIRFLOW__CORE__AUTH_MANAGER: airflow.api_fastapi.auth.managers.simple.simple_auth_manager.SimpleAuthManager
-      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "false"
-      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: admin:admin
-      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE: /opt/airflow/simple_auth_manager_passwords.json.generated
-      # Senha do user admin (consumida pelo bash do init/apiserver pra
-      # escrever o JSON do SimpleAuthManager). Default 'admin' em dev.
+      # API__BASE_URL e' a URL PUBLICA (browser-facing) — usada pra redirects
+      # (ex: /api/v2/auth/login -> /auth/login/) e link generation em emails.
+      # Em dev: localhost. Em prod: https://airflow.datajoin.cloud (vem do .env).
+      # NAO confundir com EXECUTION_API_SERVER_URL acima, que e' interno.
+      AIRFLOW__API__BASE_URL: http://localhost:${AIRFLOW_PORT:-8080}
+      # Airflow 3.x: FabAuthManager (provider apache-airflow-providers-fab).
+      # RBAC com roles built-in (Admin/Op/User/Viewer/Public), UI de Security
+      # pra criar users e atribuir roles, permissoes granulares por DAG.
+      # Substitui o SimpleAuthManager (1 user hardcoded, sem RBAC).
+      AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
+      # Credenciais do admin bootstrap (criado pelo init via `airflow users create`).
+      # Apos o 1o boot, gerencia tudo via UI; estas vars so importam no provisioning.
+      AIRFLOW_ADMIN_USERNAME: ${AIRFLOW_ADMIN_USERNAME:-admin}
       AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:-admin}
+      AIRFLOW_ADMIN_EMAIL: ${AIRFLOW_ADMIN_EMAIL:-admin@datajoin.local}
       # Configs preservadas do helmchart antigo pra paridade dev/prod.
       AIRFLOW__CORE__DEFAULT_TIMEZONE: America/Sao_Paulo
       AIRFLOW__WEBSERVER__DEFAULT_UI_TIMEZONE: America/Sao_Paulo
@@ -74,14 +100,23 @@ services:
       - ./dbt:/opt/dbt
       - airflow_logs:/opt/airflow/logs
     entrypoint: /bin/bash
+    # 1) `db migrate` cria schema do core + tabelas FAB (com AUTH_MANAGER=Fab,
+    #    o DB manager do FAB e' registrado em external_db_managers e o
+    #    `db migrate` chama as migrations dele junto).
+    # 2) `users create` retorna erro se ja existe — swallow via `|| echo`
+    #    mantem o init idempotente em re-runs.
     command:
       - -c
       - |
         airflow db migrate
-        # SimpleAuthManager: AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS define username:role
-        # (não password). A senha é gerada aleatoriamente em um JSON. Para ter senha
-        # previsível, escrevemos o arquivo manualmente antes do apiserver subir.
-        printf '{"admin": "%s"}' "$$AIRFLOW_ADMIN_PASSWORD" > /opt/airflow/simple_auth_manager_passwords.json.generated
+        airflow users create \
+          --role Admin \
+          --username "$$AIRFLOW_ADMIN_USERNAME" \
+          --email "$$AIRFLOW_ADMIN_EMAIL" \
+          --firstname Admin \
+          --lastname User \
+          --password "$$AIRFLOW_ADMIN_PASSWORD" \
+          || echo "admin user already exists — skipping create"
 
   airflow-apiserver:
     build:
@@ -100,14 +135,7 @@ services:
       - ./dbt:/opt/dbt
       - airflow_logs:/opt/airflow/logs
     # Airflow 3.x: `api-server` substitui `webserver` (UI + REST API unificados).
-    # Escreve senha fixa 'admin' no file de passwords antes de subir (SimpleAuthManager
-    # por padrão gera aleatória; isto é só pra dev).
-    entrypoint: /bin/bash
-    command:
-      - -c
-      - |
-        printf '{"admin": "%s"}' "$$AIRFLOW_ADMIN_PASSWORD" > /opt/airflow/simple_auth_manager_passwords.json.generated
-        exec airflow api-server
+    command: api-server
     restart: unless-stopped
 
   airflow-dag-processor:
@@ -167,6 +195,7 @@ services:
 
 volumes:
   airflow_logs:
+  airflow_pg_data:
 
 networks:
   default:
