@@ -11,15 +11,43 @@
 # - resources via deploy.resources.limits
 
 services:
-  # ─── one-shot: airflow db migrate + escreve senha do SimpleAuthManager ───
+  # ─── Postgres dedicado pro metadata do Airflow ───
+  # Imagem oficial provisiona role+db `airflow` no 1o boot (POSTGRES_USER +
+  # POSTGRES_DB). Sem init.sh. Container interno — sem ports expostos.
+  # Backup: pg_dump via `docker compose exec airflow-postgres pg_dump ...`.
+  airflow-postgres:
+    image: postgres:16-alpine
+    container_name: dj_airflow_postgres
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: ${AIRFLOW_DB_PASSWORD:?required}
+      POSTGRES_DB: airflow
+    volumes:
+      - airflow_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow -d airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
+
+  # ─── one-shot: airflow db migrate + bootstrap admin user (FAB) ───
   # Restart "no" + condition: service_completed_successfully nos outros services
   # garante que migrate roda 1x antes de api/scheduler/dag-processor/triggerer subirem.
   airflow-init:
     image: ghcr.io/murilorv/datajoin-airflow/airflow:${IMAGE_TAG:-main}
     container_name: dj_airflow_init
+    depends_on:
+      airflow-postgres:
+        condition: service_healthy
     environment: &airflow-env
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:${AIRFLOW_DB_PASSWORD:?required}@postgres:5432/airflow
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:${AIRFLOW_DB_PASSWORD:?required}@airflow-postgres:5432/airflow
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       AIRFLOW__CORE__DEFAULT_TIMEZONE: America/Sao_Paulo
       AIRFLOW__WEBSERVER__DEFAULT_UI_TIMEZONE: America/Sao_Paulo
@@ -41,11 +69,10 @@ services:
       AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
       # URL base p/ link generation (emails, redirects). Em prod, atras do CF tunnel.
       AIRFLOW__API__BASE_URL: ${AIRFLOW_BASE_URL:-http://airflow-apiserver:8080}
-      # Auth: SimpleAuthManager (1 user admin). Senha vem do JSON gerado abaixo.
-      AIRFLOW__CORE__AUTH_MANAGER: airflow.api_fastapi.auth.managers.simple.simple_auth_manager.SimpleAuthManager
-      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "false"
-      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: admin:admin
-      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE: /opt/airflow/simple_auth_manager_passwords.json.generated
+      # Auth: FabAuthManager (apache-airflow-providers-fab). RBAC com roles
+      # built-in (Admin/Op/User/Viewer/Public) + UI de Security pra gerenciar
+      # users. Bootstrap do admin pelo airflow-init via `airflow users create`.
+      AIRFLOW__CORE__AUTH_MANAGER: airflow.providers.fab.auth_manager.fab_auth_manager.FabAuthManager
       # Pool de conexoes ao Postgres metadata. Postgres tem max_connections=100;
       # 4 processos × (5 + 10) = 60 max no pico — folga.
       AIRFLOW__DATABASE__SQL_ALCHEMY_POOL_SIZE: "5"
@@ -61,18 +88,30 @@ services:
       DW_DEFAULT_USER: ${DW_DB_USER:?required}
       DW_DEFAULT_PASSWORD: ${DW_DB_PASSWORD:?required}
       DW_DEFAULT_DATABASE: ${DW_DB_NAME:-warehouse}
-      # Senha do admin (consumida pelo bash abaixo pra escrever o JSON).
+      # Credenciais do admin bootstrap (apos 1o boot, gerencia tudo via UI).
+      AIRFLOW_ADMIN_USERNAME: ${AIRFLOW_ADMIN_USERNAME:-admin}
       AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:?required}
+      AIRFLOW_ADMIN_EMAIL: ${AIRFLOW_ADMIN_EMAIL:?required}
     volumes:
       - airflow_logs:/opt/airflow/logs
     entrypoint: /bin/bash
-    # SimpleAuthManager por padrao gera senha aleatoria. Pra ter senha
-    # previsivel, escrevemos o JSON manualmente antes do apiserver subir.
+    # 1) `db migrate` cria schema do core + tabelas FAB (com AUTH_MANAGER=Fab,
+    #    o DB manager do FAB e' registrado em external_db_managers e o
+    #    `db migrate` chama as migrations dele junto).
+    # 2) `users create` retorna erro se ja existe — swallow via `|| echo`
+    #    deixa o init idempotente em re-runs de deploy.
     command:
       - -c
       - |
         airflow db migrate
-        printf '{"admin": "%s"}' "$$AIRFLOW_ADMIN_PASSWORD" > /opt/airflow/simple_auth_manager_passwords.json.generated
+        airflow users create \
+          --role Admin \
+          --username "$$AIRFLOW_ADMIN_USERNAME" \
+          --email "$$AIRFLOW_ADMIN_EMAIL" \
+          --firstname Admin \
+          --lastname User \
+          --password "$$AIRFLOW_ADMIN_PASSWORD" \
+          || echo "admin user already exists — skipping create"
     restart: "no"
 
   airflow-apiserver:
@@ -84,15 +123,7 @@ services:
     environment: *airflow-env
     volumes:
       - airflow_logs:/opt/airflow/logs
-    # Reescreve o JSON da senha (em named volume separado o init perderia
-    # entre restarts; em /opt/airflow nao volume-monted, so vive no FS local
-    # do container). Idempotente.
-    entrypoint: /bin/bash
-    command:
-      - -c
-      - |
-        printf '{"admin": "%s"}' "$$AIRFLOW_ADMIN_PASSWORD" > /opt/airflow/simple_auth_manager_passwords.json.generated
-        exec airflow api-server
+    command: api-server
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:8080/api/v2/version || exit 1"]
       interval: 30s
@@ -161,6 +192,7 @@ services:
 
 volumes:
   airflow_logs:
+  airflow_pg_data:
 
 networks:
   default:
