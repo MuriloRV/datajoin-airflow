@@ -67,8 +67,15 @@ services:
       AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET:?required}
       # URL que task workers usam pra reportar. Sempre interno.
       AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
-      # URL base p/ link generation (emails, redirects). Em prod, atras do CF tunnel.
-      AIRFLOW__API__BASE_URL: ${AIRFLOW_BASE_URL:-http://airflow-apiserver:8080}
+      # URL PUBLICA (browser-facing) — usada pra redirects do FAB (login,
+      # logout) e link generation em emails. PRECISA ser a URL externa
+      # (atras do CF tunnel), nao o hostname interno.
+      # Default e' a URL de prod (airflow.datajoin.cloud) pra que o deploy
+      # funcione zero-config — o secret AIRFLOW_DOTENV nao precisa setar essa
+      # var, mas pode sobrescrever caso um dia surja staging/outro dominio.
+      # NUNCA voltar pro default antigo `http://airflow-apiserver:8080`
+      # (hostname interno) — quebra o redirect de login do FAB no browser.
+      AIRFLOW__API__BASE_URL: ${AIRFLOW_BASE_URL:-https://airflow.datajoin.cloud}
       # Auth: FabAuthManager (apache-airflow-providers-fab). RBAC com roles
       # built-in (Admin/Op/User/Viewer/Public) + UI de Security pra gerenciar
       # users. Bootstrap do admin pelo airflow-init via `airflow users create`.
