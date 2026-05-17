@@ -77,6 +77,24 @@ Trade-off: factory é "mágica" — debug mais difícil, e erro na factory derru
 
 `tenants.status='suspended'` deve refletir em DAGs pausadas. Hoje feito por API call (`POST /tenants/{tid}/pipelines/{airflow_dag_id}/pause` — endpoint existente). Em factory pattern, basta a factory pular tenants suspensos no loop e o DagBag remove a DAG.
 
+## Desabilitar DAG via `.airflowignore`
+
+Pra **esconder DAG da UI** (diferente de pausar — some do DagBag, scheduler nem parseia): adiciona padrao em `dags/.airflowignore`. Sintaxe e' regex relativa a pasta `dags/` (fixada via `AIRFLOW__CORE__DAG_IGNORE_FILE_SYNTAX=regexp`).
+
+```
+# dags/.airflowignore
+^acme/                       # tenant inteiro
+^luminea/conta_azul\.py$     # DAG especifica
+^_factories/wip_.*\.py$      # WIP em factories
+```
+
+Reativar = apagar a linha (arquivo da DAG nao se move, git diff e' 1 linha). DAG some no proximo ciclo do dag-processor.
+
+**Quando usar cada um:**
+- `.airflowignore` → desligar permanente/longo prazo (DAG deprecada, tenant churned, factory em rascunho). Some da UI.
+- API de pause → suspender tenant ativo temporariamente. Continua na UI, marcada como paused.
+- `is_paused_upon_creation=True` → DAG nova que nao deve rodar ate alguem ligar.
+
 ## Templating
 
 DAG é Python — não tem placeholder mágico. Slug do tenant fica como constante no topo (`TENANT_SLUG = "acme"`) ou injetado pela factory. Nunca interpolar slug que venha de input externo (não tem como vir, mas a regra fica).

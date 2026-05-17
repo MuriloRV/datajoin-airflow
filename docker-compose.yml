@@ -84,6 +84,10 @@ services:
       # Cosmos chama `dbt parse` na 1a vez (cacheado depois) — facil bater 30s.
       AIRFLOW__DAG_PROCESSOR__DAG_FILE_PROCESSOR_TIMEOUT: "120"
       AIRFLOW__CORE__DAGBAG_IMPORT_TIMEOUT: "120"
+      # Sintaxe do .airflowignore: `regexp` (default Airflow 2.x, virou `glob`
+      # no 3.x). Fixamos explicito pra paridade e porque ancoras (^, $) e
+      # alternacao sao uteis pros padroes que usamos (ver dags/README.md).
+      AIRFLOW__CORE__DAG_IGNORE_FILE_SYNTAX: regexp
       # Endpoint da API datajoin (repo datajoin-app). Default assume rede dj_network.
       PLATFORM_API_URL: ${PLATFORM_API_URL:-http://api:8000}
       PLATFORM_API_TOKEN: ${SERVICE_TOKEN:-dev-service-token-change-me}
