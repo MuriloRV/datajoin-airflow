@@ -1,0 +1,14 @@
+# .airflowignore — esconde DAGs da UI do Airflow sem mover arquivo.
+#
+# Sintaxe: regexp (fixada via AIRFLOW__CORE__DAG_IGNORE_FILE_SYNTAX no
+# docker-compose.yml + helm values de prod). Padroes sao regex relativa
+# a esta pasta (dags/). O dag-processor pula matches no parsing, entao
+# a DAG some da UI no proximo ciclo.
+#
+# Como desabilitar:
+#   - tenant inteiro:     ^<slug>/
+#   - DAG especifica:     ^<slug>/<purpose>\.py$
+#   - WIP em factories:   ^_factories/wip_.*\.py$
+#
+# Reativar = apagar a linha. Nao precisa mexer no arquivo da DAG.
+# Ver dags/README.md secao "Desabilitar DAG via .airflowignore".
