@@ -164,9 +164,10 @@ _PIPELINE_FINALIZE_FAILED = partial(
 
 @dag(
     dag_id=DAG_ID,
-    # Sem schedule no momento — disparo somente manual via portal/Airflow UI.
-    # Quando reativar agendamento, voltar pra "0 4 * * *" (diario 4am UTC).
-    schedule=None,
+    # A cada 2h (00:00, 02:00, ...). `max_active_runs=1` + `catchup=False`
+    # garantem 1 run por vez sem backfill. ensure_token_fresh refresca o AT
+    # do Conta Azul no inicio de cada run (TTL=1h, margem 50min).
+    schedule="0 */2 * * *",
     start_date=datetime(2026, 4, 1),
     catchup=False,
     max_active_runs=1,
