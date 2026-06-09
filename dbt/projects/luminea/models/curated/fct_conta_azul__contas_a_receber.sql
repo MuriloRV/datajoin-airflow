@@ -23,6 +23,7 @@ select
     source_updated_at,
     cliente_id,
     cliente_nome,
+    categoria_id,
     num_categorias,
     num_centros_de_custo,
     foi_renegociado,

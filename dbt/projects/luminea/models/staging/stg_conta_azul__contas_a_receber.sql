@@ -34,6 +34,10 @@ renamed as (
         -- Cliente vem como objeto unico {id, nome}.
         (cliente->>'id')::uuid                         as cliente_id,
         nullif(trim(cliente->>'nome'), '')             as cliente_nome,
+        -- Categoria primaria (categorias[0]). Assume 1 categoria por titulo —
+        -- valido pra Luminea (sem rateio). num_categorias > 1 dispara o teste
+        -- accepted_values no _schema.yml pra sinalizar se aparecer rateio.
+        (categorias->0->>'id')::uuid                       as categoria_id,
         -- Conta agregadores das categorias (JSONB array).
         coalesce(jsonb_array_length(categorias), 0)        as num_categorias,
         coalesce(jsonb_array_length(centros_de_custo), 0)  as num_centros_de_custo,
