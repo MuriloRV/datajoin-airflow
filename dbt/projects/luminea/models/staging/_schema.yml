@@ -113,18 +113,38 @@ models:
         data_tests: [not_null]
 
   - name: stg_conta_azul__contas_a_receber
-    description: "Eventos a receber. cliente extraido do JSONB."
+    description: "Eventos a receber. cliente + categoria primaria extraidos do JSONB."
     columns:
       - name: evento_id
         data_tests: [not_null, unique]
+      - name: categoria_id
+        description: "Categoria primaria (categorias[0].id). FK -> categorias_financeiras."
+      - name: num_categorias
+        description: "Qtd de categorias no titulo. Assumimos 1 (sem rateio) — warn se >1."
+        data_tests:
+          - accepted_values:
+              values: [0, 1]
+              quote: false
+              config:
+                severity: warn
       - name: staged_at
         data_tests: [not_null]
 
   - name: stg_conta_azul__contas_a_pagar
-    description: "Eventos a pagar. fornecedor extraido do JSONB."
+    description: "Eventos a pagar. fornecedor + categoria primaria extraidos do JSONB."
     columns:
       - name: evento_id
         data_tests: [not_null, unique]
+      - name: categoria_id
+        description: "Categoria primaria (categorias[0].id). FK -> categorias_financeiras."
+      - name: num_categorias
+        description: "Qtd de categorias no titulo. Assumimos 1 (sem rateio) — warn se >1."
+        data_tests:
+          - accepted_values:
+              values: [0, 1]
+              quote: false
+              config:
+                severity: warn
       - name: staged_at
         data_tests: [not_null]
 

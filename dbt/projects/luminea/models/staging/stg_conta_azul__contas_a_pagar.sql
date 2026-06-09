@@ -32,6 +32,10 @@ renamed as (
         data_alteracao                                 as source_updated_at,
         (fornecedor->>'id')::uuid                      as fornecedor_id,
         nullif(trim(fornecedor->>'nome'), '')          as fornecedor_nome,
+        -- Categoria primaria (categorias[0]). Assume 1 categoria por titulo —
+        -- valido pra Luminea (sem rateio). num_categorias > 1 dispara o teste
+        -- accepted_values no _schema.yml pra sinalizar se aparecer rateio.
+        (categorias->0->>'id')::uuid                       as categoria_id,
         coalesce(jsonb_array_length(categorias), 0)        as num_categorias,
         coalesce(jsonb_array_length(centros_de_custo), 0)  as num_centros_de_custo,
         case when renegociacao is not null then true else false end as foi_renegociado,
