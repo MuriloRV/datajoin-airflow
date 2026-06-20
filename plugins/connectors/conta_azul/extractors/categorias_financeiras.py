@@ -50,17 +50,21 @@ class CategoriasFinanceirasExtractor(Extractor):
     def fetch(self, client: Any, **kwargs: Any) -> Iterator[CategoriaFinanceira]:
         # Lookup: full refresh sempre (categorias mudam raramente).
         #
-        # permite_apenas_filhos=False traz TAMBEM as categorias pai (niveis
+        # apenas_filhos=False traz TAMBEM as categorias pai (niveis
         # intermediarios da arvore, ex: "4.03 Despesas com Salarios e
         # Encargos"), nao so as folhas. Sem esse param a API /v1/categorias
-        # aplica o default e retorna apenas as folhas -> os UUIDs em
-        # `categoria_pai` ficam orfaos (apontam pra pais que nunca foram
-        # ingeridos), impossibilitando montar a hierarquia completa de
-        # categorias no DRE/relatorios.
+        # retorna apenas as folhas -> os UUIDs em `categoria_pai` ficam
+        # orfaos (apontam pra pais que nunca foram ingeridos), impossibilitando
+        # montar a hierarquia completa de categorias no DRE/relatorios.
+        #
+        # Testado contra a API real (GET /v1/categorias):
+        #   apenas_filhos=false        -> 141 itens (124 folhas + 17 pais) OK
+        #   permite_apenas_filhos=false -> 124 itens (so folhas) -- NAO traz pais
+        # ou seja: o parametro correto e' `apenas_filhos`, nao `permite_apenas_filhos`.
         yield from client.paginate_all(
             "/categorias",
             CategoriaFinanceira,
-            extra_params={"permite_apenas_filhos": False},
+            extra_params={"apenas_filhos": False},
         )
 
     def serialize_for_upsert(self, item: CategoriaFinanceira) -> dict[str, Any]:
