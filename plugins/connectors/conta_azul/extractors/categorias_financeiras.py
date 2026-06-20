@@ -49,7 +49,19 @@ class CategoriasFinanceirasExtractor(Extractor):
 
     def fetch(self, client: Any, **kwargs: Any) -> Iterator[CategoriaFinanceira]:
         # Lookup: full refresh sempre (categorias mudam raramente).
-        yield from client.paginate_all("/categorias", CategoriaFinanceira)
+        #
+        # permite_apenas_filhos=False traz TAMBEM as categorias pai (niveis
+        # intermediarios da arvore, ex: "4.03 Despesas com Salarios e
+        # Encargos"), nao so as folhas. Sem esse param a API /v1/categorias
+        # aplica o default e retorna apenas as folhas -> os UUIDs em
+        # `categoria_pai` ficam orfaos (apontam pra pais que nunca foram
+        # ingeridos), impossibilitando montar a hierarquia completa de
+        # categorias no DRE/relatorios.
+        yield from client.paginate_all(
+            "/categorias",
+            CategoriaFinanceira,
+            extra_params={"permite_apenas_filhos": False},
+        )
 
     def serialize_for_upsert(self, item: CategoriaFinanceira) -> dict[str, Any]:
         return {
