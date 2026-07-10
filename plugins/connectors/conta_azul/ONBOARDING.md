@@ -161,13 +161,15 @@ Fix: já tratado em `client.py:list_customers` — distingue "chave ausente" de 
 
 ### DAG roda mas portal datajoin não mostra a `PipelineRun`
 
-Causa: `ServiceInstance` no banco da plataforma sem `config.dag_id` apontando pro `dag_id` correto. Não é um problema do conector — é do cadastro do tenant na plataforma.
+Causa: falta a linha em `pipelines` no banco da plataforma com `airflow_dag_id` apontando pro `dag_id` correto. Não é um problema do conector — é do cadastro do tenant na plataforma.
 
-Fix: registrar via `make shell-meta`:
+> **Atualizado (2026-07):** a tabela `service_instances` foi **removida** do datajoin-app. A fonte da verdade agora é a tabela **`pipelines`** (model `Pipeline`) — a coluna é `airflow_dag_id` (UNIQUE global), não `config.dag_id`.
+
+Fix: registrar via `make shell-meta` (ajuste `tenant_id`, `slug` kebab-case e o `airflow_dag_id`):
 ```sql
-INSERT INTO service_instances (id, tenant_id, kind, config)
-VALUES (gen_random_uuid(), '<tenant_uuid>', 'etl',
-        '{"dag_id": "<tenant>__conta_azul_etl"}'::jsonb);
+INSERT INTO pipelines (id, tenant_id, name, slug, airflow_dag_id, is_active)
+VALUES (gen_random_uuid(), '<tenant_uuid>', 'Ingestão Conta Azul',
+        'conta-azul', '<tenant>__conta_azul_etl', true);
 ```
 
 ---
