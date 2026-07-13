@@ -164,10 +164,11 @@ _PIPELINE_FINALIZE_FAILED = partial(
 
 @dag(
     dag_id=DAG_ID,
-    # A cada 2h (00:00, 02:00, ...). `max_active_runs=1` + `catchup=False`
-    # garantem 1 run por vez sem backfill. ensure_token_fresh refresca o AT
-    # do Conta Azul no inicio de cada run (TTL=1h, margem 50min).
-    schedule="0 */2 * * *",
+    # Diaria as 07:00 UTC (04:00 em Brasilia) — dados amanhecem atualizados.
+    # `max_active_runs=1` + `catchup=False` garantem 1 run por vez sem
+    # backfill. ensure_token_fresh refresca o AT do Conta Azul no inicio de
+    # cada run (TTL=1h, margem 50min).
+    schedule="0 7 * * *",
     start_date=datetime(2026, 4, 1),
     catchup=False,
     max_active_runs=1,
