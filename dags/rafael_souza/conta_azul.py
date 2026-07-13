@@ -164,7 +164,8 @@ _PIPELINE_FINALIZE_FAILED = partial(
 
 @dag(
     dag_id=DAG_ID,
-    # Diaria as 07:00 UTC (04:00 em Brasilia) — dados amanhecem atualizados.
+    # Diaria as 07:00 de Brasilia (default_timezone do Airflow em prod =
+    # America/Sao_Paulo; o cron e interpretado em horario LOCAL, nao UTC).
     # `max_active_runs=1` + `catchup=False` garantem 1 run por vez sem
     # backfill. ensure_token_fresh refresca o AT do Conta Azul no inicio de
     # cada run (TTL=1h, margem 50min).
