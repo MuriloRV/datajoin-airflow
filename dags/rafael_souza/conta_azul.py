@@ -289,6 +289,17 @@ def rafael_souza__conta_azul_etl():
 
     open_pipeline = open_pipeline_run()
     token_fresh = ensure_token_fresh()
+    # Checkpoints de token entre as fases de extracao: o AT do Conta Azul
+    # tem TTL de 1h e tenants com volume grande (ex: sobrine) passam disso
+    # na carga cheia. Cada fase comeca com >=50min de token garantido; as
+    # fases dbt nao usam o token. Refresh continua serializado (1 task por
+    # vez na cadeia) — sem race do refresh_token de uso unico.
+    token_fresh_dependent = ensure_token_fresh.override(
+        task_id="ensure_token_fresh_dependent",
+    )()
+    token_fresh_transitive = ensure_token_fresh.override(
+        task_id="ensure_token_fresh_transitive",
+    )()
     extract = extract_entity_to_raw.expand(entity_name=ENTITIES)
     # Dependentes rodam APOS as primarias estarem em raw.
     extract_dependent = extract_entity_to_raw.override(
@@ -303,7 +314,9 @@ def rafael_souza__conta_azul_etl():
         open_pipeline,
         token_fresh,
         extract,
+        token_fresh_dependent,
         extract_dependent,
+        token_fresh_transitive,
         extract_transitive,
         dbt_staging_curated,
         dbt_delivery,
