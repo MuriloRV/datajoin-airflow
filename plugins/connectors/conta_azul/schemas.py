@@ -230,8 +230,10 @@ class Vendedor(BaseModel):
 
 
 class Contrato(BaseModel):
-    """Contrato com cliente. Schema tentativo — sera validado quando
-    aparecer dado real. extra='allow' protege de campos novos."""
+    """Contrato com cliente. Schema validado com dado real do tenant
+    sobrine (2026-07): `numero` vem como INT na API (ex: 21) — coagido
+    pra str. extra='allow' protege de campos novos (cliente/termos/
+    conta_financeira nested, total etc. ficam no raw via extra)."""
 
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
@@ -246,7 +248,15 @@ class Contrato(BaseModel):
     data_criacao: datetime | None = None
     data_alteracao: datetime | None = None
 
-    _empty_to_none = field_validator("numero", "descricao", mode="before")(
+    @field_validator("numero", mode="before")
+    @classmethod
+    def _numero_to_str(cls, v):
+        # API retorna int (ex: 21) ou "" — normaliza pra str | None.
+        if v is None or (isinstance(v, str) and v.strip() == ""):
+            return None
+        return str(v)
+
+    _empty_to_none = field_validator("descricao", mode="before")(
         _empty_str_to_none
     )
 
