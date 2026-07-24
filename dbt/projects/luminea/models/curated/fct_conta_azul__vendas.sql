@@ -1,57 +1,20 @@
 -- Curated: tabela fato de vendas com flags derivados pra analise.
--- Granularidade: 1 linha por venda (transacao). Itens (linha-a-linha)
--- ficam em fct_vendas_itens.
--- FKs: cliente_id -> dim_pessoas, vendedor_id -> dim_vendedores.
+-- Granularidade: 1 linha por venda (transacao).
+-- FK: cliente_id -> dim_pessoas.
 --
--- Enriquecido via LEFT JOIN com stg_vendas_detalhe pra trazer
--- valor_bruto/desconto/frete/impostos/liquido + condicao_pagamento e
--- num_parcelas (ausentes no agregado /venda/busca).
+-- MODO ENXUTO (2026-07): o LEFT JOIN com stg_vendas_detalhe foi removido —
+-- a extracao de vendas_detalhe (N+1 caro) retornava 100% NULL da API do
+-- Conta Azul (valor_liquido/frete/impostos/num_parcelas nunca vinham
+-- preenchidos). As colunas do detalhe permanecem na saida como NULL tipado
+-- pra nao quebrar o dataset `vendas_detalhe.sql` do portal.
+-- REATIVAR: restaurar a CTE `detalhe`/join abaixo + reativar a entidade
+-- `vendas_detalhe` na DAG e o model `stg_conta_azul__vendas_detalhe` no
+-- dbt_project.yml.
 
 {{ config(materialized='table') }}
 
 with stg as (
     select * from {{ ref('stg_conta_azul__vendas') }}
-),
-
-detalhe as (
-    select * from {{ ref('stg_conta_azul__vendas_detalhe') }}
-),
-
-joined as (
-    select
-        s.venda_id,
-        s.venda_id_legado,
-        s.venda_numero,
-        s.situacao,
-        s.tipo,
-        s.tipo_item,
-        s.origem,
-        s.pendente,
-        s.condicao_pagamento,
-        s.versao,
-        s.valor_total,
-        s.valor_desconto,
-        s.data_venda,
-        s.source_created_at,
-        s.source_updated_at,
-        s.observacoes,
-        s.cliente_id,
-        s.cliente_nome,
-        s.cliente_email,
-        s.cliente_id_legado,
-        s.vendedor_id,
-        s.vendedor_nome,
-        s.dono_id_legado,
-        -- Campos do detalhe (NULL quando vendas_detalhe nao foi puxado).
-        d.valor_bruto                            as valor_bruto_detalhe,
-        d.valor_frete,
-        d.valor_impostos,
-        d.valor_liquido,
-        d.natureza_operacao_nome,
-        d.condicao_pagamento                     as condicao_pagamento_detalhe,
-        d.num_parcelas
-    from stg s
-    left join detalhe d using (venda_id)
 )
 
 select
@@ -67,13 +30,14 @@ select
     versao,
     valor_total,
     valor_desconto,
-    valor_bruto_detalhe,
-    valor_frete,
-    valor_impostos,
-    valor_liquido,
-    natureza_operacao_nome,
-    condicao_pagamento_detalhe,
-    num_parcelas,
+    -- Campos do detalhe (desativados — API retorna 100% NULL; ver cabecalho).
+    null::numeric   as valor_bruto_detalhe,
+    null::numeric   as valor_frete,
+    null::numeric   as valor_impostos,
+    null::numeric   as valor_liquido,
+    null::text      as natureza_operacao_nome,
+    null::jsonb     as condicao_pagamento_detalhe,
+    null::int       as num_parcelas,
     data_venda,
     source_created_at,
     source_updated_at,
@@ -93,8 +57,8 @@ select
     case when upper(tipo_item) = 'PRODUCT' then true else false end as is_produto,
     case when upper(tipo_item) = 'SERVICE' then true else false end as is_servico,
     -- Flag de completude.
-    case when cliente_id   is not null then true else false end as has_cliente,
-    case when vendedor_id  is not null then true else false end as has_vendedor,
-    case when valor_liquido is not null then true else false end as has_detalhe,
-    current_timestamp                                            as fct_refreshed_at
-from joined
+    case when cliente_id is not null then true else false end as has_cliente,
+    false                                                     as has_vendedor,
+    false                                                     as has_detalhe,
+    current_timestamp                                         as fct_refreshed_at
+from stg

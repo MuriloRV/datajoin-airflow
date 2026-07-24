@@ -26,11 +26,124 @@ models:
       +materialized: incremental
       +schema: rafael_souza_staging
       +tags: ["staging"]
+      # Models GUARDADOS (modo enxuto 2026-07): fora do closure dos
+      # dashboards. Reativar = remover a linha `+enabled: false` (+ reativar
+      # a entidade na DAG se a raw estiver estagnada).
+      stg_conta_azul__baixas:
+        +enabled: false
+      stg_conta_azul__categorias_dre:
+        +enabled: false
+      stg_conta_azul__centros_de_custo:
+        +enabled: false
+      stg_conta_azul__cobrancas:
+        +enabled: false
+      stg_conta_azul__conta_conectada:
+        +enabled: false
+      stg_conta_azul__contas_financeiras:
+        +enabled: false
+      stg_conta_azul__contratos:
+        +enabled: false
+      stg_conta_azul__contratos_detalhe:
+        +enabled: false
+      stg_conta_azul__eventos_alteracoes:
+        +enabled: false
+      stg_conta_azul__notas_fiscais:
+        +enabled: false
+      stg_conta_azul__notas_fiscais_itens:
+        +enabled: false
+      stg_conta_azul__notas_servico:
+        +enabled: false
+      stg_conta_azul__parcelas_detalhe:
+        +enabled: false
+      stg_conta_azul__pessoa_enderecos:
+        +enabled: false
+      stg_conta_azul__pessoas:
+        +enabled: false
+      stg_conta_azul__pessoas_detalhe:
+        +enabled: false
+      stg_conta_azul__produto_categorias:
+        +enabled: false
+      stg_conta_azul__produto_cest:
+        +enabled: false
+      stg_conta_azul__produto_ecommerce_marcas:
+        +enabled: false
+      stg_conta_azul__produto_ncm:
+        +enabled: false
+      stg_conta_azul__produto_unidades_medida:
+        +enabled: false
+      stg_conta_azul__produtos:
+        +enabled: false
+      stg_conta_azul__produtos_detalhe:
+        +enabled: false
+      stg_conta_azul__saldo_atual:
+        +enabled: false
+      stg_conta_azul__servicos:
+        +enabled: false
+      stg_conta_azul__servicos_detalhe:
+        +enabled: false
+      stg_conta_azul__transferencias:
+        +enabled: false
+      stg_conta_azul__vendas_detalhe:
+        +enabled: false
+      stg_conta_azul__vendas_itens:
+        +enabled: false
+      stg_conta_azul__vendedores:
+        +enabled: false
     curated:
       +materialized: table
       +schema: rafael_souza_curated
       +tags: ["curated"]
+      dim_conta_azul__categorias_dre:
+        +enabled: false
+      dim_conta_azul__centros_de_custo:
+        +enabled: false
+      dim_conta_azul__conta_conectada:
+        +enabled: false
+      dim_conta_azul__contas_financeiras:
+        +enabled: false
+      dim_conta_azul__contratos:
+        +enabled: false
+      dim_conta_azul__pessoas:
+        +enabled: false
+      dim_conta_azul__produto_categorias:
+        +enabled: false
+      dim_conta_azul__produto_cest:
+        +enabled: false
+      dim_conta_azul__produto_ecommerce_marcas:
+        +enabled: false
+      dim_conta_azul__produto_ncm:
+        +enabled: false
+      dim_conta_azul__produto_unidades_medida:
+        +enabled: false
+      dim_conta_azul__produtos:
+        +enabled: false
+      dim_conta_azul__servicos:
+        +enabled: false
+      dim_conta_azul__vendedores:
+        +enabled: false
+      fct_conta_azul__baixas:
+        +enabled: false
+      fct_conta_azul__cobrancas:
+        +enabled: false
+      fct_conta_azul__eventos_alteracoes:
+        +enabled: false
+      fct_conta_azul__notas_fiscais:
+        +enabled: false
+      fct_conta_azul__notas_fiscais_itens:
+        +enabled: false
+      fct_conta_azul__notas_servico:
+        +enabled: false
+      fct_conta_azul__parcelas:
+        +enabled: false
+      fct_conta_azul__saldo_atual:
+        +enabled: false
+      fct_conta_azul__transferencias:
+        +enabled: false
+      fct_conta_azul__vendas_itens:
+        +enabled: false
     delivery:
       +materialized: table
       +schema: rafael_souza_delivery
       +tags: ["delivery"]
+      clientes_resumo:
+        +enabled: false
