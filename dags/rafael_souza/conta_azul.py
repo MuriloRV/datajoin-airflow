@@ -70,68 +70,61 @@ USE_MOCK = os.environ.get("CONTA_AZUL_MOCK", "0") == "1"
 # Adicionar/remover = editar este array + abrir PR. Ate o cliente pedir,
 # manter linhas comentadas pra visibilidade do que esta disponivel.
 ENTITIES: list[str] = [
-    # Pessoas
-    "pessoas",
-    "conta_conectada",                     # info do tenant (1 row)
-    # Catalogo
-    "produtos",
-    "produto_categorias",
-    "produto_ncm",
-    "produto_cest",
-    "produto_unidades_medida",
-    "produto_ecommerce_marcas",             # 0 rows sem integracao e-com
-    "servicos",
+    # ENXUTO (2026-07): extraimos SO o closure dos dashboards. As demais
+    # ficam GUARDADAS (comentadas) — reativar = descomentar aqui + remover
+    # `+enabled: false` do model no dbt_project.yml + (se precisar historico)
+    # rodar 1 carga cheia da entidade.
     # Financeiro — master data
     "categorias_financeiras",
     "categorias_dre",
-    "centros_de_custo",
-    "contas_financeiras",
     # Financeiro — eventos
     "contas_a_receber",                     # incremental + window
     "contas_a_pagar",                       # incremental + window
-    "transferencias",                       # window 5a
     "saldo_inicial",                        # window 1a
-    "eventos_alteracoes",                   # CDC (incremental)
     # Comercial
-    "vendedores",
     "vendas",                               # incremental
-    "contratos",                            # window 5a
-    # Fiscal
-    "notas_servico",                        # NFS-e (window 15d)
-    "notas_fiscais",                        # NFe (window 30d)
+    # ── Guardadas (sem uso nos relatorios atuais) ──
+    # "pessoas",
+    # "conta_conectada",
+    # "produtos",
+    # "produto_categorias",
+    # "produto_ncm",
+    # "produto_cest",
+    # "produto_unidades_medida",
+    # "produto_ecommerce_marcas",
+    # "servicos",
+    # "centros_de_custo",
+    # "contas_financeiras",
+    # "transferencias",
+    # "eventos_alteracoes",
+    # "vendedores",
+    # "contratos",
+    # "notas_servico",
+    # "notas_fiscais",
 ]
 
-# Entities que dependem de raw populado de outras entities — rodam DEPOIS.
-# Le IDs de raw.<source> e faz N+1 nos endpoints de detalhe.
-# Inclui:
-#   - pessoas_detalhe       <- pessoas
-#   - parcelas_detalhe      <- contas_a_receber + contas_a_pagar
-#   - vendas_detalhe        <- vendas
-#   - vendas_itens          <- vendas
-#   - notas_fiscais_itens   <- notas_fiscais (chave_acesso)
-#   - contratos_detalhe     <- contratos
-#   - produtos_detalhe      <- produtos
-#   - servicos_detalhe      <- servicos
-#   - saldo_atual           <- contas_financeiras (snapshot diario)
+# Entidades dependentes (N+1 nos endpoints de detalhe) — GUARDADAS.
+# Todas desativadas no modo enxuto: nenhuma alimenta relatorio hoje, e
+# vendas_detalhe retornava 100% NULL da API. Reativar = repovoar a lista
+# + reativar os models + reinstanciar extract_dependent na cadeia.
 ENTITIES_DEPENDENT: list[str] = [
-    "pessoas_detalhe",
-    "parcelas_detalhe",
-    "vendas_detalhe",
-    "vendas_itens",
-    "notas_fiscais_itens",
-    "contratos_detalhe",
-    "produtos_detalhe",
-    "servicos_detalhe",
-    "saldo_atual",
+    # "pessoas_detalhe",
+    # "parcelas_detalhe",
+    # "vendas_detalhe",
+    # "vendas_itens",
+    # "notas_fiscais_itens",
+    # "contratos_detalhe",
+    # "produtos_detalhe",
+    # "servicos_detalhe",
+    # "saldo_atual",
 ]
 
-# Entities que dependem das DEPENDENTES (cadeia de 2 niveis de N+1).
-# Inclui:
-#   - baixas        <- parcelas_detalhe (parcela_id -> /parcelas/{id}/baixas)
-#   - cobrancas     <- parcelas_detalhe + contas_a_receber (scan de cobranca_ids no jsonb)
+# Entidades transitivas (2 niveis de N+1: baixas<-parcelas) — GUARDADAS.
+# baixas/parcelas sao a fonte FUTURA do Fluxo de Caixa em regime caixa
+# (datas reais de pagamento). Reativar junto com ENTITIES_DEPENDENT.
 ENTITIES_TRANSITIVE: list[str] = [
-    "baixas",
-    "cobrancas",
+    # "baixas",
+    # "cobrancas",
 ]
 
 # Cosmos lê o profiles.yml do proprio projeto dbt — preserva o macro
@@ -289,35 +282,27 @@ def rafael_souza__conta_azul_etl():
 
     open_pipeline = open_pipeline_run()
     token_fresh = ensure_token_fresh()
-    # Checkpoints de token entre as fases de extracao: o AT do Conta Azul
-    # tem TTL de 1h e tenants com volume grande (ex: sobrine) passam disso
-    # na carga cheia. Cada fase comeca com >=50min de token garantido; as
-    # fases dbt nao usam o token. Refresh continua serializado (1 task por
-    # vez na cadeia) — sem race do refresh_token de uso unico.
-    token_fresh_dependent = ensure_token_fresh.override(
-        task_id="ensure_token_fresh_dependent",
-    )()
-    token_fresh_transitive = ensure_token_fresh.override(
-        task_id="ensure_token_fresh_transitive",
-    )()
+    # Checkpoints de token entre fases ficam GUARDADOS junto com as fases
+    # N+1 (modo enxuto). A carga so das primarias cabe folgada no TTL do
+    # token (1h); o refresh single-flight do client cobre o resto.
     extract = extract_entity_to_raw.expand(entity_name=ENTITIES)
-    # Dependentes rodam APOS as primarias estarem em raw.
-    extract_dependent = extract_entity_to_raw.override(
-        task_id="extract_dependent_to_raw",
-    ).expand(entity_name=ENTITIES_DEPENDENT)
-    # Transitivas rodam APOS as dependentes (cadeia de 2 niveis de N+1):
-    # ex: baixas le parcela_ids de raw.parcelas_detalhe.
-    extract_transitive = extract_entity_to_raw.override(
-        task_id="extract_transitive_to_raw",
-    ).expand(entity_name=ENTITIES_TRANSITIVE)
+    # ── Fases N+1 GUARDADAS ────────────────────────────────────────────
+    # ENTITIES_DEPENDENT/TRANSITIVE estao vazias — NAO instanciar .expand()
+    # sobre lista vazia (Airflow marca skipped e propaga pro dbt). Reativar:
+    # repovoar as listas + descomentar o bloco e recolocar os elos na cadeia.
+    #
+    # token_fresh_dependent = ensure_token_fresh.override(
+    #     task_id="ensure_token_fresh_dependent")()
+    # token_fresh_transitive = ensure_token_fresh.override(
+    #     task_id="ensure_token_fresh_transitive")()
+    # extract_dependent = extract_entity_to_raw.override(
+    #     task_id="extract_dependent_to_raw").expand(entity_name=ENTITIES_DEPENDENT)
+    # extract_transitive = extract_entity_to_raw.override(
+    #     task_id="extract_transitive_to_raw").expand(entity_name=ENTITIES_TRANSITIVE)
     chain(
         open_pipeline,
         token_fresh,
         extract,
-        token_fresh_dependent,
-        extract_dependent,
-        token_fresh_transitive,
-        extract_transitive,
         dbt_staging_curated,
         dbt_delivery,
     )
