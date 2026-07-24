@@ -735,17 +735,20 @@ class ContaAzulClient:
     # ────────────────── OAuth2 ──────────────────
 
     def _ensure_access_token(self) -> str:
-        """Devolve o access_token atual; refresca se preciso E permitido.
+        """Devolve o access_token atual; refresca se preciso.
 
         Margem de 60s pra evitar TOCTOU: token recém-renovado pode ainda
         estar válido na hora da request, mas expira no servidor antes da
         resposta voltar — e aí 401 acontece.
 
-        Quando `allow_refresh=False` (tasks paralelas de extract): levanta
-        erro em vez de refrescar — refresh deve ter rodado na task
-        `ensure_token_fresh` no inicio da DAG. Se o AT expirou no meio do
-        fan-out, eh sinal de DAG > TTL do AT (1h) ou Connection com tokens
-        invalidos — falhar loud eh melhor que entrar em race.
+        Quando `allow_refresh=False` (tasks paralelas de extract): usa o
+        caminho SINGLE-FLIGHT (`_locked_refresh`) — um flock em arquivo
+        serializa o refresh entre os subprocesses do host (LocalExecutor
+        single-node): só uma task chama /oauth2/token (refresh_token é de
+        uso único); as demais esperam o lock e ADOTAM os tokens novos que
+        o vencedor persistiu na Connection. Necessário pra tenants com
+        volume grande (ex: sobrine), cujas fases de extração passam do
+        TTL do AT (1h) mesmo com checkpoints entre fases.
         """
         if self._access_token and self._access_token_expires_at:
             if self._access_token_expires_at > datetime.now(
@@ -754,17 +757,110 @@ class ContaAzulClient:
                 return self._access_token
 
         if not self._allow_refresh:
-            raise ContaAzulAuthError(
-                "access_token expirou e este client foi construido com "
-                "allow_refresh=False. Possiveis causas: (1) DAG run durou "
-                f"mais que o TTL do AT (1h); (2) Connection {self._conn_id!r} "
-                "esta com tokens invalidos. Refresh so eh permitido na task "
-                "`ensure_token_fresh` no inicio da DAG."
-            )
-
-        self._refresh_access_token()
-        assert self._access_token  # acabou de ser setado
+            self._locked_refresh()
+        else:
+            self._refresh_access_token()
+        assert self._access_token  # acabou de ser setado/recarregado
         return self._access_token
+
+    def _locked_refresh(self) -> None:
+        """Refresh single-flight pra tasks paralelas (allow_refresh=False).
+
+        Serializa via flock em /tmp (todas as tasks rodam no MESMO host —
+        subprocesses do scheduler). Dentro do lock, primeiro RE-LÊ a
+        Connection via REST (mesmo canal do _persist_tokens — sem cache):
+        se outra task já renovou enquanto esperávamos, adota os tokens
+        novos sem gastar o refresh_token. Senão, renova e persiste ainda
+        dentro do lock.
+        """
+        if self._mock:
+            return
+        if not self._conn_id:
+            raise ContaAzulAuthError(
+                "access_token expirou e o client nao tem conn_id pra "
+                "recarregar/persistir tokens. Construa via "
+                "from_airflow_connection()."
+            )
+        import fcntl
+
+        lock_path = f"/tmp/conta_azul_refresh_{self._conn_id}.lock"
+        log.info(
+            "Conta Azul: AT expirou no meio da run — aguardando lock de "
+            "refresh (conn_id=%s)",
+            self._conn_id,
+        )
+        with open(lock_path, "a", encoding="utf-8") as lf:
+            fcntl.flock(lf, fcntl.LOCK_EX)
+            try:
+                # Alguém pode ter renovado enquanto esperávamos o lock.
+                self._reload_tokens_from_rest()
+                if self._access_token and self._access_token_expires_at:
+                    if self._access_token_expires_at > datetime.now(
+                        timezone.utc
+                    ) + timedelta(seconds=60):
+                        log.info(
+                            "Conta Azul: tokens frescos adotados da Connection "
+                            "(renovados por outra task) — sem novo refresh"
+                        )
+                        return
+                # Somos o responsável: renova + persiste DENTRO do lock.
+                self._refresh_access_token()
+            finally:
+                fcntl.flock(lf, fcntl.LOCK_UN)
+
+    def _reload_tokens_from_rest(self) -> None:
+        """Recarrega tokens da Connection via REST API do Airflow.
+
+        Mesmo canal do _persist_tokens (GET /api/v2/connections/<id>) —
+        leitura direta do metadado, sem passar por SecretCache do SDK.
+        Best-effort: em falha, mantém os tokens em memória (o refresh
+        subsequente decide o destino).
+        """
+        try:
+            import os
+
+            airflow_url = os.environ.get(
+                "AIRFLOW_API_URL", "http://airflow-apiserver:8080"
+            )
+            user = os.environ.get("AIRFLOW_API_USER", "admin")
+            password = os.environ.get("AIRFLOW_API_PASSWORD", "admin")
+
+            login = httpx.post(
+                f"{airflow_url}/auth/token",
+                json={"username": user, "password": password},
+                timeout=10,
+            )
+            login.raise_for_status()
+            token = login.json()["access_token"]
+
+            get_resp = httpx.get(
+                f"{airflow_url}/api/v2/connections/{self._conn_id}",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=10,
+            )
+            get_resp.raise_for_status()
+            extra_raw = get_resp.json().get("extra") or "{}"
+            extra = json.loads(extra_raw)
+
+            if extra.get("refresh_token"):
+                self._refresh_token = extra["refresh_token"]
+            if extra.get("access_token"):
+                self._access_token = extra["access_token"]
+            expires_raw = extra.get("access_token_expires_at")
+            if expires_raw:
+                try:
+                    self._access_token_expires_at = datetime.fromisoformat(
+                        expires_raw.replace("Z", "+00:00")
+                    )
+                except ValueError:
+                    pass
+        except Exception as e:  # noqa: BLE001
+            log.warning(
+                "Conta Azul: falha recarregando tokens da Connection %s via "
+                "REST (%s) — seguindo com tokens em memória",
+                self._conn_id,
+                e,
+            )
 
     def ensure_token_fresh(self, min_remaining_minutes: int = 50) -> None:
         """Refresca o access_token se faltar menos que `min_remaining_minutes`.
