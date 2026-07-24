@@ -13,7 +13,7 @@ renamed as (
         id::uuid                       as categoria_id,
         trim(nome)                     as categoria_nome,
         nullif(upper(trim(tipo)), '')  as tipo,            -- RECEITA | DESPESA
-        categoria_pai::uuid            as categoria_pai_id,
+        nullif(categoria_pai, '')::uuid            as categoria_pai_id,
         nullif(trim(entrada_dre), '')  as entrada_dre,
         coalesce(considera_custo_dre, false) as considera_custo_dre,
         versao,
