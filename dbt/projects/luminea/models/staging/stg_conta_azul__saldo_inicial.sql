@@ -10,7 +10,7 @@ with source as (
 
 select
     id::uuid                                       as saldo_id,
-    nullif(conta_financeira_id, '')::uuid                      as conta_financeira_id,
+    conta_financeira_id::uuid                      as conta_financeira_id,
     nullif(trim(conta_financeira->>'nome'), '')    as conta_financeira_nome,
     data_referencia,
     saldo,
