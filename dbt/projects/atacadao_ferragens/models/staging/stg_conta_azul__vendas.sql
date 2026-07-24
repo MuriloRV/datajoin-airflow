@@ -41,10 +41,10 @@ renamed as (
         data_alteracao                                 as source_updated_at,
         nullif(trim(observacoes), '')                  as observacoes,
         -- Cliente/vendedor vem como objeto unico {id, nome}.
-        (cliente->>'id')::uuid                         as cliente_id,
+        nullif(cliente->>'id', '')::uuid                         as cliente_id,
         nullif(trim(cliente->>'nome'), '')             as cliente_nome,
         nullif(lower(trim(cliente->>'email')), '')     as cliente_email,
-        (vendedor->>'id')::uuid                        as vendedor_id,
+        nullif(vendedor->>'id', '')::uuid                        as vendedor_id,
         nullif(trim(vendedor->>'nome'), '')            as vendedor_nome,
         id_legado                                      as venda_id_legado,
         id_legado_cliente                              as cliente_id_legado,
