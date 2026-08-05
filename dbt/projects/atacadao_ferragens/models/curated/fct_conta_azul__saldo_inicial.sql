@@ -13,8 +13,10 @@ select
     conta_financeira_id,
     conta_financeira_nome,
     data_referencia,
+    tipo,
     saldo,
     saldo_inicial,
+    saldo_inicial_liquido,
     case when conta_financeira_id is not null then true else false end as has_conta,
     current_timestamp as fct_refreshed_at
 from stg
