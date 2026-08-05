@@ -18,7 +18,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 
 # ─────────────── Mixin: empty string -> None ───────────────
@@ -624,14 +624,25 @@ class SaldoInicial(BaseModel):
     """Saldo inicial por conta financeira em determinado periodo.
     Endpoint: /v1/financeiro/eventos-financeiros/saldo-inicial.
 
-    Schema tentativo. Provavel granularidade: 1 row por (conta_financeira, periodo).
+    Validado com dado real (atacadao, 2026-08): a API devolve 1 item por
+    conta financeira, mas com os campos `id_conta_financeira` e
+    `data_competencia` (NAO `conta_financeira_id`/`data_referencia`). Sem os
+    aliases abaixo, esses campos ficavam null e o UUID v5 deterministico
+    (conta+data) colapsava as N contas numa unica linha. `saldo_inicial` vem
+    sempre POSITIVO; o SINAL vem de `tipo` (RECEITA=+ / DESPESA=-) — aplicado
+    na camada dbt (staging).
     """
 
     model_config = ConfigDict(extra="allow", populate_by_name=True)
 
     id: UUID | None = None  # pode nao existir; PK composta (conta + data) como fallback
-    conta_financeira_id: UUID | None = None
-    data_referencia: datetime | None = None
+    conta_financeira_id: UUID | None = Field(
+        None, validation_alias=AliasChoices("conta_financeira_id", "id_conta_financeira")
+    )
+    data_referencia: datetime | None = Field(
+        None, validation_alias=AliasChoices("data_referencia", "data_competencia")
+    )
+    tipo: str | None = None  # RECEITA | DESPESA — define o sinal do saldo
     saldo: float | None = None
     saldo_inicial: float | None = None
     conta_financeira: dict | None = None
