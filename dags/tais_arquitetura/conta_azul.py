@@ -1,0 +1,312 @@
+"""DAG tais_arquitetura__conta_azul_etl — pipeline completo Conta Azul.
+
+Pipeline em 3 etapas sequenciais:
+    1. extract_entity_to_raw     : Python (mapped task)  -> tais_arquitetura_raw.conta_azul__*
+    2. dbt_staging_curated       : Cosmos                -> tais_arquitetura_staging + tais_arquitetura_curated
+    3. dbt_delivery              : Cosmos                -> tais_arquitetura_delivery
+
+Visibility com Cosmos: cada model dbt vira 1 task individual no Graph
+view do Airflow. Tests viram tasks separadas. Lineage do dbt
+(`{{ ref('...') }}`, `{{ source('...') }}`) vira lineage do Airflow —
+paralelismo automatico onde nao ha dependencia.
+
+Selecao de entidades por tenant: a constante `ENTITIES` define quais
+entidades a DAG extrai. Mudanca = PR no codigo (operador/admin), nao
+config no portal — decisao consciente pra evitar drift entre tenants.
+Linhas comentadas dao visibilidade do que existe e esta desabilitado.
+
+Esta DAG e' DECLARATIVA — so config, constantes e a orquestracao.
+Toda logica de extract/load vive em
+`plugins/connectors/conta_azul/loader.py` + `extractors/`.
+Modelagem dbt em `dbt/projects/tais_arquitetura/models/`.
+
+Versionamento da lib: ver plugins/connectors/conta_azul/README.md.
+"""
+from __future__ import annotations
+
+import os
+from datetime import datetime
+from functools import partial
+
+# Side effect: silencia deprecations da Cosmos 1.14.x x Airflow 3.x.
+# Tem que vir ANTES do import de `cosmos` pra os filtros estarem
+# instalados antes do shim de compat emitir os warnings.
+import platform_warnings  # noqa: F401
+from airflow.sdk import Asset, chain, dag, task
+from cosmos import (
+    DbtTaskGroup,
+    ExecutionConfig,
+    ProfileConfig,
+    ProjectConfig,
+    RenderConfig,
+)
+
+from connectors.conta_azul import ContaAzulClient, load_entity_to_raw
+from platform_telemetry import (
+    TelemetryContext,
+    dbt_model_callback,
+    dw_connection,
+    pipeline_run_finalize,
+    pipeline_run_start,
+    resolve_tenant_by_slug,
+)
+
+# ─────────────── Configs do tenant ───────────────
+TENANT_SLUG = "tais_arquitetura"
+DAG_ID = f"{TENANT_SLUG}__conta_azul_etl"
+RAW_SCHEMA = f"{TENANT_SLUG}_raw"
+DBT_PROJECT_DIR = f"/opt/dbt/projects/{TENANT_SLUG}"
+# Connection do Airflow com credenciais OAuth2 do Conta Azul.
+# Convencao: <slug>__<source>. Criar via UI: Admin > Connections.
+# Documentacao detalhada em plugins/connectors/conta_azul/README.md.
+CONN_ID = f"{TENANT_SLUG}__conta_azul"
+# Mock=True so quando explicito (dev/CI sem creds reais). Em prod nunca.
+USE_MOCK = os.environ.get("CONTA_AZUL_MOCK", "0") == "1"
+
+# Entidades extraidas neste tenant. Cada string e' chave do registry
+# em connectors.conta_azul.extractors.EXTRACTORS — vira 1 task mapeada
+# no Airflow + 1 tabela em raw `conta_azul__<entity>`.
+#
+# Adicionar/remover = editar este array + abrir PR. Ate o cliente pedir,
+# manter linhas comentadas pra visibilidade do que esta disponivel.
+ENTITIES: list[str] = [
+    # ENXUTO (2026-07): extraimos SO o closure dos dashboards. As demais
+    # ficam GUARDADAS (comentadas) — reativar = descomentar aqui + remover
+    # `+enabled: false` do model no dbt_project.yml + (se precisar historico)
+    # rodar 1 carga cheia da entidade.
+    # Financeiro — master data
+    "categorias_financeiras",
+    "categorias_dre",
+    # Financeiro — eventos
+    "contas_a_receber",                     # incremental + window
+    "contas_a_pagar",                       # incremental + window
+    "saldo_inicial",                        # window 1a
+    # Comercial
+    "vendas",                               # incremental
+    # ── Guardadas (sem uso nos relatorios atuais) ──
+    # "pessoas",
+    # "conta_conectada",
+    # "produtos",
+    # "produto_categorias",
+    # "produto_ncm",
+    # "produto_cest",
+    # "produto_unidades_medida",
+    # "produto_ecommerce_marcas",
+    # "servicos",
+    # "centros_de_custo",
+    # "contas_financeiras",
+    # "transferencias",
+    # "eventos_alteracoes",
+    # "vendedores",
+    # "contratos",
+    # "notas_servico",
+    # "notas_fiscais",
+]
+
+# Entidades dependentes (N+1 nos endpoints de detalhe) — GUARDADAS.
+# Todas desativadas no modo enxuto: nenhuma alimenta relatorio hoje, e
+# vendas_detalhe retornava 100% NULL da API. Reativar = repovoar a lista
+# + reativar os models + reinstanciar extract_dependent na cadeia.
+ENTITIES_DEPENDENT: list[str] = [
+    # "pessoas_detalhe",
+    # "parcelas_detalhe",
+    # "vendas_detalhe",
+    # "vendas_itens",
+    # "notas_fiscais_itens",
+    # "contratos_detalhe",
+    # "produtos_detalhe",
+    # "servicos_detalhe",
+    # "saldo_atual",
+]
+
+# Entidades transitivas (2 niveis de N+1: baixas<-parcelas) — GUARDADAS.
+# baixas/parcelas sao a fonte FUTURA do Fluxo de Caixa em regime caixa
+# (datas reais de pagamento). Reativar junto com ENTITIES_DEPENDENT.
+ENTITIES_TRANSITIVE: list[str] = [
+    # "baixas",
+    # "cobrancas",
+]
+
+# Cosmos lê o profiles.yml do proprio projeto dbt — preserva o macro
+# generate_schema_name e demais customizacoes do tenant. Alternativa
+# (profile_mapping com Connection do Airflow) ficaria mais acoplada.
+PROFILE_CONFIG = ProfileConfig(
+    profile_name=TENANT_SLUG,
+    target_name="dev",
+    profiles_yml_filepath=f"{DBT_PROJECT_DIR}/profiles.yml",
+)
+
+# Callback que reporta 1 PipelineTask por model dbt no DB datajoin. Tolerante
+# a falhas (try/except interno + log warning) — telemetria nao derruba
+# a DAG. Anexado em both success e failure pra capturar models que
+# quebraram tambem. project_dir e' usado pra ler rows_affected do
+# target/run_results.json.
+_DBT_MODEL_CB = partial(
+    dbt_model_callback, tenant_slug=TENANT_SLUG, project_dir=DBT_PROJECT_DIR
+)
+
+# Callbacks DAG-level pra publicar PipelineRun (rollup). Tolerante a falhas
+# internamente — telemetria nunca derruba a DAG.
+_PIPELINE_FINALIZE_SUCCESS = partial(
+    pipeline_run_finalize, tenant_slug=TENANT_SLUG, status="success"
+)
+_PIPELINE_FINALIZE_FAILED = partial(
+    pipeline_run_finalize, tenant_slug=TENANT_SLUG, status="failed"
+)
+
+
+@dag(
+    dag_id=DAG_ID,
+    # Diaria as 07:00 de Brasilia (default_timezone do Airflow em prod =
+    # America/Sao_Paulo; o cron e interpretado em horario LOCAL, nao UTC).
+    # `max_active_runs=1` + `catchup=False` garantem 1 run por vez sem
+    # backfill. ensure_token_fresh refresca o AT do Conta Azul no inicio de
+    # cada run (TTL=1h, margem 50min).
+    schedule="0 7 * * *",
+    start_date=datetime(2026, 4, 1),
+    catchup=False,
+    max_active_runs=1,
+    tags=["tenant:tais_arquitetura", "kind:etl", "source:conta_azul"],
+    doc_md=__doc__,
+    on_success_callback=_PIPELINE_FINALIZE_SUCCESS,
+    on_failure_callback=_PIPELINE_FINALIZE_FAILED,
+)
+def tais_arquitetura__conta_azul_etl():
+    # Primeira task: cria a PipelineRun pai. Airflow 3.x nao tem hook estavel
+    # de "DAG comecou" — fazer via task de abertura e' a forma robusta.
+    @task(retries=2)
+    def open_pipeline_run(**context) -> None:
+        pipeline_run_start(context, tenant_slug=TENANT_SLUG)
+
+    @task(retries=3, retry_exponential_backoff=True)
+    def ensure_token_fresh() -> None:
+        """Refresca proativamente o access_token do Conta Azul.
+
+        Conta Azul rotaciona o refresh_token a cada chamada (uso unico).
+        Se duas tasks paralelas tentassem refrescar simultaneamente, a
+        segunda receberia invalid_grant — race condition. Esta task
+        roda ANTES do fan-out paralelo, no unico subprocess que tem
+        permissao pra refrescar (allow_refresh=True). Todas as tasks de
+        extract herdam o AT fresco da Connection com allow_refresh=False
+        — nunca tentam refrescar, falham loud se AT vencer no meio.
+
+        Margem 50min: AT tem TTL 1h, entao apos refresh aqui sobra ~10min
+        de folga mesmo se a DAG inteira rodar. DAGs > 1h precisam de
+        ajuste (rodar essa task de novo, ou aumentar a margem).
+        """
+        client = ContaAzulClient.from_airflow_connection(
+            CONN_ID, mock=USE_MOCK, allow_refresh=True
+        )
+        client.ensure_token_fresh(min_remaining_minutes=50)
+
+    @task(
+        retries=3,
+        retry_exponential_backoff=True,
+        # Cap concurrencia das tasks mapeadas: rate limit do Conta Azul
+        # e' ~10 req/s. Com 6+ entities expandindo simultaneamente, hit
+        # garantido. 2 paralelas deixam folga pra cada uma usar ate 5 req/s.
+        max_active_tis_per_dag=2,
+    )
+    def extract_entity_to_raw(entity_name: str, **context) -> dict:
+        """1) Extrai 1 entidade do Conta Azul e materializa em tais_arquitetura_raw.
+
+        Mapeada por entity_name via .expand(entity_name=ENTITIES) — Airflow
+        cria N task instances paralelas (1 por entity). Failure isolada
+        por task: se `vendas` falhar, `pessoas` ainda termina e dbt segue
+        com o que tem.
+        """
+        import logging
+        log = logging.getLogger("conta_azul.dag")
+        log.info("[%s] resolving tenant %s", entity_name, TENANT_SLUG)
+        tenant = resolve_tenant_by_slug(TENANT_SLUG)
+        log.info("[%s] tenant resolved: id=%s", entity_name, tenant["id"])
+
+        log.info("[%s] entering TelemetryContext (POST /pipeline-tasks/upsert status=running)", entity_name)
+        with TelemetryContext.from_airflow(context, tenant_id=tenant["id"]) as tele:
+            log.info("[%s] TelemetryContext OK; building ContaAzulClient (mock=%s)", entity_name, USE_MOCK)
+            # Le credenciais OAuth2 da Connection `tais_arquitetura__conta_azul`.
+            # CONTA_AZUL_MOCK=1 forca mock pra dev local sem creds.
+            # allow_refresh=False: tasks paralelas nao podem refrescar
+            # (refresh_token e' uso unico — race garantida com 2 paralelas).
+            # Refresh acontece APENAS na task ensure_token_fresh upstream.
+            client = ContaAzulClient.from_airflow_connection(
+                CONN_ID, mock=USE_MOCK, allow_refresh=False
+            )
+            log.info("[%s] client built; opening DW connection", entity_name)
+            with dw_connection() as conn:
+                log.info("[%s] DW conn OK; calling load_entity_to_raw", entity_name)
+                rows = load_entity_to_raw(
+                    client, conn, RAW_SCHEMA, entity_name,
+                    tenant_slug=TENANT_SLUG,
+                    run_id=context["run_id"],
+                )
+                log.info("[%s] load_entity_to_raw returned rows=%d", entity_name, rows)
+            tele.add_rows_inserted(rows)
+            log.info("[%s] returning from task with rows=%d", entity_name, rows)
+            return {
+                "tenant_id": tenant["id"],
+                "entity": entity_name,
+                "rows": rows,
+            }
+
+    # 2) Cosmos expande staging + curated em tasks individuais
+    # (1 por model + 1 por test). Filtro via tags definidas no
+    # dbt_project.yml. Callback reporta 1 PipelineTask por model.
+    dbt_staging_curated = DbtTaskGroup(
+        group_id="dbt_staging_curated",
+        project_config=ProjectConfig(DBT_PROJECT_DIR),
+        profile_config=PROFILE_CONFIG,
+        execution_config=ExecutionConfig(),  # local: usa dbt-core instalado no container
+        render_config=RenderConfig(
+            select=["tag:staging", "tag:curated"],
+        ),
+        default_args={
+            "on_success_callback": _DBT_MODEL_CB,
+            "on_failure_callback": _DBT_MODEL_CB,
+        },
+    )
+
+    # 3) Delivery — agregados finais. Roda apenas apos staging+curated OK.
+    dbt_delivery = DbtTaskGroup(
+        group_id="dbt_delivery",
+        project_config=ProjectConfig(DBT_PROJECT_DIR),
+        profile_config=PROFILE_CONFIG,
+        execution_config=ExecutionConfig(),
+        render_config=RenderConfig(
+            select=["tag:delivery"],
+        ),
+        default_args={
+            "on_success_callback": _DBT_MODEL_CB,
+            "on_failure_callback": _DBT_MODEL_CB,
+        },
+    )
+
+    open_pipeline = open_pipeline_run()
+    token_fresh = ensure_token_fresh()
+    # Checkpoints de token entre fases ficam GUARDADOS junto com as fases
+    # N+1 (modo enxuto). A carga so das primarias cabe folgada no TTL do
+    # token (1h); o refresh single-flight do client cobre o resto.
+    extract = extract_entity_to_raw.expand(entity_name=ENTITIES)
+    # ── Fases N+1 GUARDADAS ────────────────────────────────────────────
+    # ENTITIES_DEPENDENT/TRANSITIVE estao vazias — NAO instanciar .expand()
+    # sobre lista vazia (Airflow marca skipped e propaga pro dbt). Reativar:
+    # repovoar as listas + descomentar o bloco e recolocar os elos na cadeia.
+    #
+    # token_fresh_dependent = ensure_token_fresh.override(
+    #     task_id="ensure_token_fresh_dependent")()
+    # token_fresh_transitive = ensure_token_fresh.override(
+    #     task_id="ensure_token_fresh_transitive")()
+    # extract_dependent = extract_entity_to_raw.override(
+    #     task_id="extract_dependent_to_raw").expand(entity_name=ENTITIES_DEPENDENT)
+    # extract_transitive = extract_entity_to_raw.override(
+    #     task_id="extract_transitive_to_raw").expand(entity_name=ENTITIES_TRANSITIVE)
+    chain(
+        open_pipeline,
+        token_fresh,
+        extract,
+        dbt_staging_curated,
+        dbt_delivery,
+    )
+
+
+tais_arquitetura__conta_azul_etl()
